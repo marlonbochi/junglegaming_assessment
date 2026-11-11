@@ -180,6 +180,18 @@ describe('processing', () => {
     expect(JSON.stringify(logLines)).not.toContain('25.00');
   });
 
+  test('uppercase playerId/walletId are normalized and processed', async () => {
+    const q = await queues();
+    await startConsumer(q);
+    const wallet = await openWallet();
+    await sendWagerMessage(sqs, q.queueUrl, wagerData(wallet, { playerId: wallet.playerId.toUpperCase(), walletId: wallet.id.toUpperCase() }));
+    await eventually(async () => {
+      expect(await wagers(wallet.id)).toEqual([expect.objectContaining({ status: 'PROCESSED', kind: 'BET' })]);
+    });
+    expect(await balance(wallet.id)).toBe('75.00');
+    await expectQueueEmpty(q.queueUrl);
+  });
+
   test('duplicated message (two sends, different SQS MessageId, same messageId) → one debit, duplicate metric', async () => {
     const q = await queues();
     const { metrics } = await startConsumer(q);

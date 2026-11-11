@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { submitWagerBody } from '../http/schemas';
+import { lowercaseUuid, submitWagerBody } from '../http/schemas';
 
 const messageId = z.string().min(1).max(255);
 
@@ -36,7 +36,7 @@ export function parseWagerMessage(body: string | undefined): ParsedWagerMessage 
 const readableIds = z.object({
   messageId: messageId.optional().catch(undefined),
   data: z
-    .object({ walletId: z.uuid().optional().catch(undefined) })
+    .object({ walletId: lowercaseUuid.optional().catch(undefined) })
     .optional()
     .catch(undefined),
 });

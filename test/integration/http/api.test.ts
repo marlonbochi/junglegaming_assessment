@@ -135,6 +135,29 @@ describe('wallets', () => {
   });
 });
 
+describe('uuid case normalization', () => {
+  test('uppercase ids are accepted, normalized to lowercase and treated as the same logical request', async () => {
+    const playerId = newId();
+    const created = await call(api, 'POST', '/wallets', { body: { playerId: playerId.toUpperCase(), initialBalance: brl('100.00') } });
+    expect(created.status).toBe(201);
+    expect(created.body.playerId).toBe(playerId);
+
+    const wallet = created.body as WalletJson;
+    const upper = wagerBody(wallet, { playerId: wallet.playerId.toUpperCase(), walletId: wallet.id.toUpperCase() });
+    const first = await submit(upper, 'case-key-1');
+    expect(first.status).toBe(200);
+    expect(first.body).toMatchObject({ status: 'PROCESSED', idempotentReplay: false });
+
+    const replay = await submit({ ...upper, playerId: wallet.playerId, walletId: wallet.id }, 'case-key-1');
+    expect(replay.status).toBe(200);
+    expect(replay.body).toEqual({ ...first.body, idempotentReplay: true });
+
+    const got = await call(api, 'GET', `/wallets/${wallet.id.toUpperCase()}`);
+    expect(got.status).toBe(200);
+    expect(got.body.id).toBe(wallet.id);
+  });
+});
+
 describe('wager transactions', () => {
   test('POST /wagering/transactions 200 PROCESSED with README response body', async () => {
     const wallet = await openWallet();

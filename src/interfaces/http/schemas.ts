@@ -6,7 +6,10 @@ const money = z.object({ amount: z.string(), currency: z.string() }).strict();
 
 const text = z.string().min(1).max(255);
 
-export const uuidParam = z.uuid();
+/** A valid uuid, canonicalised to lowercase so spellings of one id compare and hash identically. */
+export const lowercaseUuid = z.uuid().transform((value) => value.toLowerCase());
+
+export const uuidParam = lowercaseUuid;
 export const textParam = text;
 
 /** Required on submissions; a missing or oversized key is MISSING_IDEMPOTENCY_KEY. */
@@ -14,7 +17,7 @@ export const idempotencyKeyHeader = z.string().min(1).max(255);
 
 export const openWalletBody = z
   .object({
-    playerId: z.uuid(),
+    playerId: lowercaseUuid,
     initialBalance: money,
   })
   .strict();
@@ -31,8 +34,8 @@ export const submitWagerBody = z
   .object({
     providerId: text,
     externalTransactionId: text,
-    playerId: z.uuid(),
-    walletId: z.uuid(),
+    playerId: lowercaseUuid,
+    walletId: lowercaseUuid,
     roundId: text,
     gameId: text,
     kind: z.enum(SUBMITTABLE_KINDS),
