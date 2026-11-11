@@ -21,6 +21,7 @@ export class Migration20261111000000Initial extends Migration {
     this.addSql(`DROP TRIGGER wager_transactions_guard ON wager_transactions;`);
     this.addSql(`DROP TRIGGER ledger_append_only_truncate ON wallet_ledger_entries;`);
     this.addSql(`DROP TRIGGER ledger_append_only ON wallet_ledger_entries;`);
+    this.addSql(`DROP TRIGGER ledger_wallet_consistency ON wallet_ledger_entries;`);
     this.addSql(`DROP TRIGGER ledger_chain_guard ON wallet_ledger_entries;`);
     this.addSql(`DROP TRIGGER wallets_ledger_consistency ON wallets;`);
     this.addSql(`DROP TRIGGER wallets_version_guard ON wallets;`);
@@ -28,6 +29,7 @@ export class Migration20261111000000Initial extends Migration {
     this.addSql(`DROP FUNCTION outbox_guard();`);
     this.addSql(`DROP FUNCTION wager_transactions_guard();`);
     this.addSql(`DROP FUNCTION ledger_append_only();`);
+    this.addSql(`DROP FUNCTION ledger_wallet_consistency();`);
     this.addSql(`DROP FUNCTION ledger_chain_guard();`);
     this.addSql(`DROP FUNCTION wallets_ledger_consistency();`);
     this.addSql(`DROP FUNCTION wallets_version_guard();`);
@@ -254,13 +256,30 @@ export class Migration20261111000000Initial extends Migration {
   }
 
   private createLedgerGuards(): void {
-    // The chain starts at version 1 (wallet opened with balance > 0) or 2 (opened with zero) from a
-    // zero balance and continues without gaps, each entry starting where the previous one ended.
+    // An entry belongs to its wallet's currency and to a transaction of the same wallet. The chain
+    // starts at version 1 (wallet opened with balance > 0) or 2 (opened with zero) from a zero
+    // balance and continues without gaps, each entry starting where the previous one ended.
+    // Missing wallet/transaction rows are left to the foreign keys.
     this.addSql(`
       CREATE FUNCTION ledger_chain_guard() RETURNS trigger LANGUAGE plpgsql AS $$
       DECLARE
+        wallet_currency char(3);
+        transaction_wallet_id uuid;
         previous_balance_after numeric(20,2);
       BEGIN
+        SELECT currency INTO wallet_currency FROM wallets WHERE id = NEW.wallet_id;
+        IF FOUND AND NEW.currency <> wallet_currency THEN
+          RAISE EXCEPTION 'ledger_chain_guard: entry currency % differs from wallet % currency %',
+              NEW.currency, NEW.wallet_id, wallet_currency
+            USING ERRCODE = 'integrity_constraint_violation', CONSTRAINT = 'ledger_chain_guard', TABLE = TG_TABLE_NAME;
+        END IF;
+        SELECT wallet_id INTO transaction_wallet_id FROM wager_transactions WHERE id = NEW.transaction_id;
+        IF FOUND AND NEW.wallet_id <> transaction_wallet_id THEN
+          RAISE EXCEPTION 'ledger_chain_guard: transaction % belongs to wallet %, not to wallet %',
+              NEW.transaction_id, transaction_wallet_id, NEW.wallet_id
+            USING ERRCODE = 'integrity_constraint_violation', CONSTRAINT = 'ledger_chain_guard', TABLE = TG_TABLE_NAME;
+        END IF;
+
         SELECT balance_after INTO previous_balance_after
         FROM wallet_ledger_entries
         WHERE wallet_id = NEW.wallet_id AND wallet_version = NEW.wallet_version - 1;
@@ -286,6 +305,33 @@ export class Migration20261111000000Initial extends Migration {
       CREATE TRIGGER ledger_chain_guard
         BEFORE INSERT ON wallet_ledger_entries
         FOR EACH ROW EXECUTE FUNCTION ledger_chain_guard();`);
+
+    // The mirror of wallets_ledger_consistency: an entry cannot run ahead of its wallet. Checked at
+    // COMMIT against the wallet's current row, so entry and wallet update may be written in any order.
+    this.addSql(`
+      CREATE FUNCTION ledger_wallet_consistency() RETURNS trigger LANGUAGE plpgsql AS $$
+      DECLARE
+        current_balance numeric(20,2);
+        current_version integer;
+      BEGIN
+        SELECT balance, version INTO current_balance, current_version FROM wallets WHERE id = NEW.wallet_id;
+        IF NOT FOUND THEN
+          RETURN NULL;
+        END IF;
+        IF current_version < NEW.wallet_version
+           OR (current_version = NEW.wallet_version AND current_balance <> NEW.balance_after) THEN
+          RAISE EXCEPTION 'ledger_wallet_consistency: entry % (version %, balance_after %) does not match wallet % (version %, balance %)',
+              NEW.id, NEW.wallet_version, NEW.balance_after, NEW.wallet_id, current_version, current_balance
+            USING ERRCODE = 'integrity_constraint_violation', CONSTRAINT = 'ledger_wallet_consistency', TABLE = TG_TABLE_NAME;
+        END IF;
+        RETURN NULL;
+      END;
+      $$;`);
+    this.addSql(`
+      CREATE CONSTRAINT TRIGGER ledger_wallet_consistency
+        AFTER INSERT ON wallet_ledger_entries
+        DEFERRABLE INITIALLY DEFERRED
+        FOR EACH ROW EXECUTE FUNCTION ledger_wallet_consistency();`);
 
     this.addSql(`
       CREATE FUNCTION ledger_append_only() RETURNS trigger LANGUAGE plpgsql AS $$

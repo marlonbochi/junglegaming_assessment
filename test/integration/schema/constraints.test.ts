@@ -248,6 +248,37 @@ describe('wallet_ledger_entries', () => {
       insertEntry(db.sql, entryRow(wallet.id, winB.id, { direction: 'CREDIT', amount: '10.00', before: '100.00', after: '110.00', version: 2 })),
     ).rejects.toThrow(/wallet_ledger_entries_wallet_id_wallet_version_key/);
   });
+
+  test('ledger entry without matching wallet update fails at commit', async () => {
+    const wallet = await openWallet('100.00');
+    const win = await insertTx(db.sql, txRow(wallet, { kind: 'WIN' }));
+    const conn = await db.sql.reserve();
+    try {
+      await conn`BEGIN`;
+      // Correctly chained, so the insert itself succeeds…
+      await insertEntry(conn, entryRow(wallet.id, win.id, { direction: 'CREDIT', amount: '10.00', before: '100.00', after: '110.00', version: 2 }));
+      // …but the wallet never reached version 2, so COMMIT is refused.
+      await expect(conn`COMMIT`).rejects.toThrow(/ledger_wallet_consistency/);
+    } finally {
+      conn.release();
+    }
+    const [{ count }] = await db.sql`SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = ${wallet.id}`;
+    expect(count).toBe(1);
+  });
+
+  test('ledger entry must match its wallet currency and its transaction wallet', async () => {
+    const wallet = await openWallet('100.00');
+    const win = await insertTx(db.sql, txRow(wallet, { kind: 'WIN' }));
+    const credit: EntryProps = { direction: 'CREDIT', amount: '10.00', before: '100.00', after: '110.00', version: 2 };
+
+    await expect(insertEntry(db.sql, { ...entryRow(wallet.id, win.id, credit), currency: 'USD' })).rejects.toThrow(
+      /ledger_chain_guard/,
+    );
+
+    const other = await openWallet();
+    const otherWin = await insertTx(db.sql, txRow(other, { kind: 'WIN' }));
+    await expect(insertEntry(db.sql, entryRow(wallet.id, otherWin.id, credit))).rejects.toThrow(/ledger_chain_guard/);
+  });
 });
 
 describe('wager_transactions', () => {

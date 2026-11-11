@@ -6,6 +6,7 @@ const TABLES = ['inbox_messages', 'outbox_messages', 'wager_transactions', 'wall
 const FUNCTIONS = [
   'ledger_append_only',
   'ledger_chain_guard',
+  'ledger_wallet_consistency',
   'outbox_guard',
   'wager_transactions_guard',
   'wallets_ledger_consistency',
