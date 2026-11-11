@@ -61,7 +61,7 @@ test(
 );
 
 test(
-  `scenario 3: ${WALLETS} wallets × ${BETS_PER_WALLET} BETs finish in under half the time of ${WALLETS * BETS_PER_WALLET} BETs on one hot wallet`,
+  `scenario 3: ${WALLETS} wallets × ${BETS_PER_WALLET} BETs finish in under 75% of the time of ${WALLETS * BETS_PER_WALLET} BETs on one hot wallet`,
   withServiceLogs(async () => {
     const apis = await spawnServices('api', 3, suite.env());
     const hot = await openWalletVia(apis[0]!, '1000.00');
@@ -72,7 +72,8 @@ test(
     const hotMs = await timedBets(apis, Array(WALLETS * BETS_PER_WALLET).fill(hot));
     const spreadMs = await timedBets(apis, spread.flatMap((w) => Array(BETS_PER_WALLET).fill(w)));
 
-    expect(spreadMs).toBeLessThan(0.5 * hotMs);
+    // Loose on purpose (unknown hardware): the pg_locks test above is the proof; this one shows the throughput gain.
+    expect(spreadMs).toBeLessThan(0.75 * hotMs);
     expect(await suite.balance(hot.id)).toBe('500.00');
     for (const [i, wallet] of spread.entries()) {
       const warmUpBets = i < 10 ? 3 : 0;
