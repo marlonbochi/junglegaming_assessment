@@ -219,4 +219,18 @@ describe('MikroOrmUnitOfWork', () => {
     expect(secondBatch).toHaveLength(3);
     expect(new Set([...firstBatch, ...secondBatch])).toEqual(mine);
   });
+
+  test('run with isolation repeatable read reads one snapshot; the default re-reads committed changes', async () => {
+    const versionsSeen = async (opts?: { isolation: 'repeatable read' }) => {
+      const { wallet } = await uow.run((r) => persistOpenedWallet(r, '100.00'));
+      return uow.run(async (r) => {
+        const before = (await r.wallets.findById(wallet.id))!.version;
+        await uow.run(async (other) => persistMove(other, (await other.wallets.lockById(wallet.id))!, 'BET', '10.00'));
+        const after = (await r.wallets.findById(wallet.id))!.version;
+        return [before, after];
+      }, opts);
+    };
+    expect(await versionsSeen({ isolation: 'repeatable read' })).toEqual([1, 1]);
+    expect(await versionsSeen()).toEqual([1, 2]);
+  });
 });

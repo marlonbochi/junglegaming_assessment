@@ -1,7 +1,8 @@
+import { IsolationLevel } from '@mikro-orm/core';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
 import { TransientInfraError, UniqueViolationError } from '../../application/errors';
 import type { Metrics } from '../../application/ports/metrics';
-import type { TxRepositories, UnitOfWork } from '../../application/ports/unit-of-work';
+import type { TxRepositories, UnitOfWork, UnitOfWorkOptions as RunOptions } from '../../application/ports/unit-of-work';
 import { classifyPgError, uniqueConstraintName } from './pg-errors';
 import { MikroOrmInboxRepository } from './repositories/inbox.repository';
 import { MikroOrmLedgerRepository } from './repositories/ledger.repository';
@@ -34,7 +35,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     this.statementTimeout = `${opts.statementTimeoutMs ?? DEFAULT_STATEMENT_TIMEOUT_MS}ms`;
   }
 
-  async run<T>(fn: (r: TxRepositories) => Promise<T>): Promise<T> {
+  async run<T>(fn: (r: TxRepositories) => Promise<T>, opts?: RunOptions): Promise<T> {
     try {
       return await this.orm.em.fork().transactional(async (em) => {
         // set_config(..., true) is SET LOCAL: scoped to this transaction only.
@@ -43,7 +44,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           this.statementTimeout,
         ]);
         return fn(repositoriesFor(em));
-      });
+      }, opts?.isolation ? { isolationLevel: IsolationLevel.REPEATABLE_READ } : undefined);
     } catch (e) {
       throw this.translate(e);
     }

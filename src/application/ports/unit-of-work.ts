@@ -12,6 +12,11 @@ export interface TxRepositories {
   outbox: OutboxRepository;
 }
 
+export interface UnitOfWorkOptions {
+  /** Defaults to the database default (read committed). */
+  isolation?: 'repeatable read';
+}
+
 export interface UnitOfWork {
-  run<T>(fn: (r: TxRepositories) => Promise<T>): Promise<T>;
+  run<T>(fn: (r: TxRepositories) => Promise<T>, opts?: UnitOfWorkOptions): Promise<T>;
 }
