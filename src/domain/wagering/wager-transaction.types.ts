@@ -65,6 +65,10 @@ export class MissingReferenceError extends DomainError {
   readonly code = 'INVALID_PAYLOAD';
 }
 
+export class UnexpectedReferenceError extends DomainError {
+  readonly code = 'INVALID_PAYLOAD';
+}
+
 export class OpeningNotAllowedError extends DomainError {
   readonly code = 'INVALID_PAYLOAD';
 }

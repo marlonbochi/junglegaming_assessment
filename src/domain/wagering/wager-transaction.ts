@@ -7,6 +7,7 @@ import {
   CreateWagerTransactionProps,
   MissingReferenceError,
   OpeningNotAllowedError,
+  UnexpectedReferenceError,
   WagerTransactionKind,
   WagerTransactionState,
   WagerTransactionStatus,
@@ -24,6 +25,9 @@ export class WagerTransaction {
     const needsReference = p.kind === WagerTransactionKind.Refund || p.kind === WagerTransactionKind.Rollback;
     if (needsReference && !p.referenceExternalTransactionId) {
       throw new MissingReferenceError(`${p.kind} requires a reference transaction`);
+    }
+    if (p.kind === WagerTransactionKind.Bet && p.referenceExternalTransactionId) {
+      throw new UnexpectedReferenceError('BET must not reference another transaction');
     }
     if (!p.money.isPositive()) {
       throw new InvalidMoneyError(`Transaction amount must be positive: ${p.money.toString()}`);

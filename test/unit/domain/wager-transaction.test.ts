@@ -7,6 +7,7 @@ import { LedgerDirection } from '../../../src/domain/wallet/wallet-ledger-entry'
 import {
   MissingReferenceError,
   OpeningNotAllowedError,
+  UnexpectedReferenceError,
   WagerTransactionKind,
   WagerTransactionStatus,
 } from '../../../src/domain/wagering/wager-transaction.types';
@@ -41,6 +42,9 @@ describe('WagerTransaction', () => {
 
   test.each(['REFUND', 'ROLLBACK'] as const)('%s without reference throws', (k) =>
     expect(() => tx({ kind: k, referenceExternalTransactionId: undefined })).toThrow(MissingReferenceError));
+
+  test('BET with reference throws', () =>
+    expect(() => tx({ kind: 'BET', referenceExternalTransactionId: 'ext-ref' })).toThrow(UnexpectedReferenceError));
 
   test('OPENING via create throws', () =>
     expect(() => tx({ kind: 'OPENING' })).toThrow(OpeningNotAllowedError));
