@@ -9,6 +9,7 @@
     "test:integration": "bun run infra:test:up && bun test --preload ./test/support/setup-integration.ts test/integration",
     "test:concurrency": "bun run infra:test:up && bun test --preload ./test/support/setup-integration.ts --timeout 120000 test/concurrency",
     "test:e2e": "sh -c 'docker compose up -d --build --scale consumer=3 --scale workers=2 --wait && E2E_COMPOSE=1 bun test --timeout 120000 test/e2e test/integration/runtime; status=$?; docker compose down -v; exit $status'",
+    "test:load": "bun test/load/run.ts",
     "test": "bun run typecheck && bun run test:unit && bun run test:integration && bun run test:concurrency && bun run test:e2e",
     "infra:test:up": "docker compose -f compose.test.yml up -d --wait",
     "infra:test:down": "docker compose -f compose.test.yml down -v",

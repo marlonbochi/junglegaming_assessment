@@ -462,7 +462,7 @@ Cenários de concorrência obrigatórios:
 | 7 | ROLLBACK antes da referência | `07-reference-before-target.test.ts` | Via SQS: `ROLLBACK` fica `PENDING_REFERENCE`, a BET chega, ambos ficam `PROCESSED` e o saldo é restaurado |
 | 8 | Reinício | `08-restart-recovery.test.ts` | `SIGKILL` em `api`, 3 `consumer` e 2 `workers` no meio da carga → stack reiniciada drena, cada operação é aplicada exatamente uma vez, todas as wallets reconciliadas |
 
-Os testes de carga (k6, com relatório) são a próxima tarefa do plano.
+Testes de carga: `bun run test:load` (k6 em container contra a stack do Compose com limites fixos de CPU/memória; cenários distribuído em escada, hot wallet, 30% de duplicatas, drenagem de 50 mil mensagens SQS com 1 e 3 consumers e soak). Cada cenário termina com a reconciliação de todas as wallets. Ambiente, metodologia, números, gargalos e limitações estão em [`docs/load-test-report.md`](docs/load-test-report.md).
 
 ## Interpretações adotadas
 
@@ -494,7 +494,7 @@ Fora de escopo por decisão:
 
 - Escala fixa de 2 casas para todas as moedas; sem reversão parcial; ledger de partida simples, não de partidas dobradas; nenhum consumidor de `wallet-events.fifo` no repositório; sem OpenTelemetry nem dashboards.
 - LocalStack não reproduz latência, throttling nem limites reais da AWS.
-- Pendentes no plano: **testes de carga com relatório** e **Keycloak** (desenho na seção [Autenticação](#autenticação)).
+- Pendente no plano: **Keycloak** (desenho na seção [Autenticação](#autenticação)). Os limites de capacidade medidos e o que mudaria para escalar estão em [`docs/load-test-report.md`](docs/load-test-report.md).
 
 Limitações conhecidas no código, em ordem aproximada de impacto:
 

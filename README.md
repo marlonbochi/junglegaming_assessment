@@ -231,13 +231,21 @@ Do host, a mesma fila fica em `http://localhost:4567/000000000000/wager-transact
 | `bun run test:integration` | `compose.test.yml` (projeto `wagering-test`: Postgres em `55432`, LocalStack em `4566`) | `test/integration`, com Postgres e LocalStack reais. Cada arquivo clona um banco migrado (`CREATE DATABASE … TEMPLATE`) e cria filas próprias | ~25 s (178 testes; 2 skips: o smoke do Compose só roda no E2E) |
 | `bun run test:concurrency` | `compose.test.yml` | `test/concurrency`: os 8 cenários obrigatórios com processos reais (`Bun.spawn` de `api`/`consumer`/`workers`) | ~20 s (9 testes) |
 | `bun run test:e2e` | `compose.yml` inteiro com `--build --scale consumer=3 --scale workers=2 --wait`; ao final, `docker compose down -v` | `test/e2e` + `test/integration/runtime` (`E2E_COMPOSE=1`), interagindo só por HTTP e SQS | ~45 s com imagens em cache (17 testes) |
-| `bun run test` | tudo acima | `typecheck → test:unit → test:integration → test:concurrency → test:e2e` | ~1,5 min |
+| `bun run test:load` | Para cada cenário, uma stack nova de `compose.yml` + `compose.load.yml` (limites fixos de CPU/memória) e, ao final, `docker compose down -v` | k6 (`grafana/k6:2.3.0`, em container na rede do Compose) com os cenários `distributed`, `hot-wallet`, `duplicates` e `sqs-drain` (`--scenario soak` roda o soak de 10 min). Coleta `/metrics`, `pg_stat_activity` e `docker stats`; reconcilia todas as wallets e falha se alguma estiver inconsistente. Resultados em `test/load/results/<timestamp>/` (fora do git); análise em [`docs/load-test-report.md`](docs/load-test-report.md) | ~22 min (soak: ~12 min) |
+| `bun run test` | tudo acima, exceto `test:load` | `typecheck → test:unit → test:integration → test:concurrency → test:e2e` | ~1,5 min |
 | `bun run infra:test:up` / `infra:test:down` | sobe / derruba (`-v`) só o `compose.test.yml` | — | — |
 | `bun run db:migrate` / `db:migrate:down` | nada | aplica / reverte as migrations em `DATABASE_URL` | — |
 
 \* Medido num MacBook (Apple Silicon) com as imagens Docker já baixadas.
 
 A infra de teste (`wagering-test`, portas 55432/4566) e a stack da aplicação (`wagering`, portas 5433/4567/3000) têm nomes de projeto e portas distintos e podem rodar lado a lado. `test:integration` e `test:concurrency` deixam a infra de teste rodando; para derrubá-la, use `bun run infra:test:down`. A URL do servidor Postgres de teste pode ser trocada com `TEST_DATABASE_SERVER_URL` (padrão `postgres://postgres:postgres@localhost:55432`).
+
+Testes de carga (`bun run test:load [--scenario <nome>] [--consumers N] [--rate N] [--levels a,b,c] [--messages N] [--minutes N]`):
+
+- Pré-requisitos: só Docker e Bun no host (o k6 roda na imagem `grafana/k6:2.3.0`; o módulo `k6-jslib-aws` 0.14.0 é baixado de `jslib.k6.io`, então é preciso internet). A VM do Docker precisa de pelo menos 4 CPUs e 6 GB. Rode com a máquina ociosa: os limites somam mais CPU que a VM tem, e qualquer outra carga entra na medição.
+- Usa o projeto Compose `wagering`, como o E2E: não rode com uma stack de desenvolvimento que você quer manter, nem junto com `test:e2e`.
+- Cenários: `distributed` (escada de 100 a 700 req/s sobre 1.000 wallets), `hot-wallet` (10 wallets e 1 wallet), `duplicates` (~30% de reenvios), `sqs-drain` ou `drain` (50 mil mensagens, `consumer=1` e depois `consumer=3`; `--consumers N` mede só N) e `soak` (10 min a ~50% do throughput máximo medido pelo último `distributed`, ou `--rate`).
+- O processo termina com código ≠ 0 se um threshold do k6 falhar (checks de correção < 100%, ou erro > 1% fora da escada do `distributed`), se alguma wallet não reconciliar, se o número de replays contados pelo serviço (`wagering_duplicates_total`) diferir do número de duplicatas enviadas, ou se a drenagem perder, duplicar ou mandar para a DLQ alguma mensagem.
 
 Toda suíte não unitária termina verificando `wallet.balance == saldo reconstruído pelo ledger` em todas as wallets tocadas.
 
@@ -299,14 +307,15 @@ src/
   interfaces/        http (controllers, zod, problem+json), sqs (consumer), workers (laços de polling)
   main.api.ts  main.consumer.ts  main.workers.ts  main.migrate.ts
 test/
-  unit/  integration/  concurrency/  e2e/  support/
+  unit/  integration/  concurrency/  e2e/  load/  support/
 infra/localstack/init/ready.d/01-queues.sh     criação das filas
-compose.yml  compose.test.yml  Dockerfile  mikro-orm.config.ts
+compose.yml  compose.test.yml  compose.load.yml  Dockerfile  mikro-orm.config.ts
 ```
 
 ## Documentos
 
 - [`ARCHITECTURE.md`](ARCHITECTURE.md): decisões, trade-offs, interpretações e limitações.
+- [`docs/load-test-report.md`](docs/load-test-report.md): relatório dos testes de carga (ambiente, metodologia, resultados, gargalos e limitações).
 - [`docs/constitution.md`](docs/constitution.md): regras invioláveis do projeto.
 - [`docs/superpowers/specs/2026-11-10-wagering-processor-design.md`](docs/superpowers/specs/2026-11-10-wagering-processor-design.md): spec de design.
 - [`docs/superpowers/plans/2026-11-11-wagering-processor.md`](docs/superpowers/plans/2026-11-11-wagering-processor.md): plano de implementação.
