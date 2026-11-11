@@ -98,6 +98,31 @@ export function sliceOf(k6: K6Export, tag: string, seconds: number): Slice {
   };
 }
 
+export interface Capacity {
+  sustainableRps: number;
+  maxThroughputRps: number;
+  saturatedAt: number | null;
+}
+
+/**
+ * `maxThroughputRps`: the highest rate actually achieved on any held level (the saturation
+ * throughput). `sustainableRps`: the highest level held with ≥ 97% of the target rate, < 1% errors and
+ * p95 ≤ 100 ms (the latency-bounded capacity); `saturatedAt`: the first level that misses it.
+ */
+export function capacityOf(slices: Slice[] | undefined, levels: number[]): Capacity {
+  let sustainableRps = 0;
+  let saturatedAt: number | null = null;
+  for (const [i, level] of levels.entries()) {
+    const s = slices?.[i];
+    if (!s) break;
+    const ok = s.rps >= 0.97 * level && s.errorRate < 0.01 && s.latencyMs.p95 <= 100;
+    if (ok && saturatedAt === null) sustainableRps = level;
+    else if (!ok && saturatedAt === null) saturatedAt = level;
+  }
+  const maxThroughputRps = Math.max(0, ...(slices ?? []).map((s) => s.rps));
+  return { sustainableRps, maxThroughputRps, saturatedAt };
+}
+
 // ---------- /metrics deltas ----------
 
 export interface ServiceMetrics {

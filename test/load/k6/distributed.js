@@ -1,13 +1,14 @@
 import exec from 'k6/execution';
-import { Mix, checkDecision, correctnessThresholds, submit, trendStats } from './lib/payloads.js';
+import { Mix, checkDecision, correctnessThresholds, serverErrorThresholds, submit, trendStats } from './lib/payloads.js';
 import { wallets } from './lib/seed.js';
 
 /**
  * Distributed load over every seeded wallet (1000), BET/WIN/LOSS mix, as a staircase of
  * arrival rates: each LEVEL is reached in RAMP_S seconds and held for HOLD_S seconds. Requests are
  * tagged with the level being held (`stage:L0100`, or `ramp`), so the summary has latency, throughput
- * and error rate per level and run.ts can find the saturation point (achieved rate < target, p99 or
- * errors climbing). Only correctness is a hard threshold here: going past saturation is the point.
+ * and error rate per level and run.ts can find the saturation point (achieved rate < target, p95 or
+ * errors climbing). Going past saturation is the point, so the error-rate SLO is not a threshold here;
+ * correctness is, and so is "no 5xx and no unexpected 4xx" (timeouts stay reportable).
  */
 const LEVELS = (__ENV.LEVELS || '100,200,300,400,500,600,700').split(',').map(Number);
 const RAMP_S = Number(__ENV.RAMP_S || 5);
@@ -38,7 +39,7 @@ export const options = {
     },
   },
   summaryTrendStats: trendStats,
-  thresholds: { ...correctnessThresholds, ...perStage },
+  thresholds: { ...correctnessThresholds, ...serverErrorThresholds, ...perStage },
 };
 
 function currentStage() {

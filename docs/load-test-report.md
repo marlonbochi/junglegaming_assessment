@@ -55,11 +55,13 @@ Durante as rodadas, nenhuma outra stack Docker estava ativa (a infra de teste `w
 
 - `http.setResponseCallback(expectedStatuses(200, 202, 422))`: um 422 `INSUFFICIENT_FUNDS` é resposta de negócio, não erro. Erro é 5xx, timeout (sem status) ou 4xx inesperado. No brief, o threshold estava escrito como `http_req_failed{expected_response:true}`, mas essa submétrica tem 0% de falhas por definição. Em vez dela, o callback acima define o que é falha, e o threshold é `http_req_failed < 1%`.
 - `checks{type:correctness} == 1.0` em todo cenário. Para toda resposta decidida (não 5xx), verifica: status permitido para o kind (`BET` só pode ser recusada por `INSUFFICIENT_FUNDS`; `WIN`/`LOSS` precisam dar 200), `body.status` coerente com o status HTTP, saldo no formato `^\d+\.\d{2}$` em BRL e `idempotentReplay` com o valor esperado. Nas duplicatas, verifica também: mesmo `transactionId`, mesmo status, header `Idempotent-Replayed: true` e, no par simultâneo, exatamente um original.
-- No `distributed`, só a correção é threshold que reprova. Passar da saturação é o objetivo do cenário, e a taxa de erro é reportada por degrau.
+- No `distributed`, passar da saturação é o objetivo do cenário, então a taxa de erro (que inclui timeouts) é só reportada por degrau. Reprovam a rodada a correção e qualquer 5xx ou 4xx inesperado (`responses_5xx` e `responses_unexpected_4xx` com `count==0`). Esses dois gates foram acrescentados depois da rodada oficial, na qual os dois contadores foram 0.
 
 **Capacidade.** O `distributed` é uma escada: 100, 200, 300, 400, 500, 600 e 700 req/s, cada degrau alcançado em 5 s e mantido por 30 s, sobre 1.000 wallets com 1.000.000,00. As requisições recebem a tag do degrau em que começaram, e cada degrau tem suas próprias métricas. A rodada exploratória foi até 800 req/s e mostrou que a saturação vinha antes, em torno de 550 req/s. Por isso a escada foi encurtada para caber em ~5 min. O brief sugeria uma rampa contínua de 50 até 800 req/s em 5 min. A escada responde à mesma pergunta e dá, além disso, percentis estáveis por patamar. O relatório usa duas definições:
 - **capacidade com latência**: maior degrau com ≥ 97% da taxa-alvo, erro < 1% e p95 ≤ 100 ms (SLO arbitrário, mas explícito);
 - **throughput máximo**: a maior taxa efetivamente atingida em algum degrau.
+
+Esse critério foi **endurecido depois da rodada oficial**. O primeiro critério (≥ 95% da taxa-alvo, erro < 1% e p99 < 1 s) apontava 600 req/s, um degrau em que o p50 já era de 463 ms, ou seja, pura fila. O critério novo exige ≥ 97% da taxa-alvo e p95 ≤ 100 ms. Aplicado aos mesmos dados, ele dá os 400 req/s citados neste relatório: no degrau de 500, a vazão foi 96% da pedida e o p95 chegou a 689 ms. O `summary.md` e o `distributed.json` da rodada oficial foram regenerados com o critério novo, sem rodar carga de novo, por `bun test/load/rerender.ts test/load/results/2026-11-11T20-44-55`. Esse script recalcula a capacidade a partir das fatias salvas e reescreve o resumo.
 
 **Cenários e durações.**
 
@@ -173,7 +175,7 @@ Leitura:
 
 ## Variação entre rodadas
 
-Cada cenário rodou duas vezes (rodada exploratória e rodada oficial), com stack nova a cada vez:
+Cada cenário padrão rodou duas vezes (rodada exploratória e rodada oficial), com stack nova a cada vez. O soak rodou uma vez só, porque não houve rodada exploratória de 10 min. Para ele, a única medida de variação disponível é a de minuto a minuto dentro da própria rodada (p50 de 3,2 a 3,6 ms, p99 de 11 a 26 ms; ver [Soak](#soak)).
 
 | Medida | Exploratória | Oficial |
 |---|---|---|
@@ -211,7 +213,7 @@ Em ordem de retorno esperado:
 - **LocalStack não é a AWS.** O LocalStack é um único processo Python, sem latência de rede real, sem throttling e com custo de receive que cresce com a profundidade da fila FIFO. Os números de drenagem medem o emulador tanto quanto o consumer. A AWS tem outros limites (ver o item 4 acima) e latência de rede entre serviço e SQS, que aqui é zero.
 - **Máquina única.** Os 4 CPUs da VM Docker são compartilhados por todos os serviços e pelo k6 (que usou até 44% de um núcleo). Os limites de cgroup são tetos, não núcleos dedicados, e a soma deles passa da VM. Não há rede real entre os serviços (bridge do Docker na mesma VM).
 - **k6 no mesmo host e com `maxVUs` de 300.** Acima da saturação, a latência reportada é limitada pelo teto de requisições em voo. Com mais VUs ela seria maior, e o throughput não mudaria.
-- **Durações curtas.** São 30 s por degrau, 60 a 120 s por fase e 10 min de soak. Efeitos de longo prazo (autovacuum, crescimento de índices, *bloat*, checkpoints de bancos grandes) não foram exercitados: o maior cenário termina com ~330 mil linhas inseridas.
+- **Durações curtas.** São 30 s por degrau, 60 a 120 s por fase e 10 min de soak. Efeitos de longo prazo (autovacuum, crescimento de índices, *bloat*, checkpoints de bancos grandes) não foram exercitados: o maior cenário, o soak, insere ~640 mil linhas (o distribuído, ~330 mil).
 - **Amostragem grossa.** São 1 s para `pg_stat_activity` e ~3 s para `docker stats`, e os quantis do lado do serviço vêm dos buckets padrão do prom-client. As porcentagens de espera são proporções de amostras, não tempo exato.
 - **Variação.** São duas rodadas por cenário. As caudas variaram até 10×, e houve uma parada de ~2 s não explicada no cenário de duplicatas (ver acima).
 - **O mix não inclui `REFUND`/`ROLLBACK` nem `PENDING_REFERENCE`.** O worker de pendências ficou ocioso, e esses caminhos estão cobertos pelas suítes de concorrência e E2E, não por carga.
@@ -227,4 +229,4 @@ bun run test:load --scenario hot-wallet --rate 300
 bun run test:load --scenario drain --messages 20000 --consumers 2
 ```
 
-Saída: `test/load/results/<timestamp>/summary.md` (tabelas), `<cenário>.json` (números extraídos, com as amostras brutas de `pg_stat_activity` e `docker stats` e a linha do tempo da fila) e `<cenário>.k6.json` (`--summary-export` do k6).
+Saída: `test/load/results/<timestamp>/summary.md` (tabelas; `bun test/load/rerender.ts <diretório>` o regenera a partir dos JSONs, sem rodar carga), `<cenário>.json` (números extraídos, com as amostras brutas de `pg_stat_activity` e `docker stats` e a linha do tempo da fila) e `<cenário>.k6.json` (`--summary-export` do k6).

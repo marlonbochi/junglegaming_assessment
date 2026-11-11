@@ -1,4 +1,4 @@
-import type { ContainerUsage, HttpSummary, Latency, PgAnalysis, ServiceMetrics, Slice } from './analysis';
+import type { Capacity, ContainerUsage, HttpSummary, Latency, PgAnalysis, ServiceMetrics, Slice } from './analysis';
 
 export interface Environment {
   cpu: string;
@@ -26,7 +26,9 @@ export interface ScenarioResult {
   pg?: PgAnalysis;
   containers?: ContainerUsage[];
   outboxCatchUpS?: number | null;
-  capacity?: { sustainableRps: number; maxThroughputRps: number; saturatedAt: number | null };
+  /** Failed pg_stat_activity / docker stats samples (absent in runs before this field existed). */
+  samplerFailures?: Record<string, number>;
+  capacity?: Capacity;
   drain?: Array<{
     consumers: number;
     enqueued: number;
@@ -39,6 +41,7 @@ export interface ScenarioResult {
     outboxCatchUpS: number | null;
     transactionsByStatus: Record<string, number>;
     dlqDepth: number;
+    samplerFailures?: Record<string, number>;
     metrics: ServiceMetrics;
     pg: PgAnalysis;
     containers: ContainerUsage[];
@@ -67,6 +70,9 @@ function containersTable(rows: ContainerUsage[]): string[] {
     ),
   ];
 }
+
+const samplerLine = (failures: Record<string, number> | undefined) =>
+  failures && Object.values(failures).some((n) => n > 0) ? [`- **Amostras com falha**: ${kv(failures)}`] : [];
 
 function pgLines(pg: PgAnalysis): string[] {
   return [
@@ -116,6 +122,7 @@ function scenarioSection(r: ScenarioResult): string[] {
   if (r.outboxCatchUpS !== undefined) out.push(`- Outbox zerada ${f(r.outboxCatchUpS)} s após o fim da carga`);
   if (r.db) out.push(`- pg_stat_database Δ: ${kv(r.db)}`);
   if (r.pg) out.push(...pgLines(r.pg));
+  out.push(...samplerLine(r.samplerFailures));
   if (r.containers) out.push('', ...containersTable(r.containers));
   for (const d of r.drain ?? []) {
     out.push(
@@ -127,6 +134,7 @@ function scenarioSection(r: ScenarioResult): string[] {
       `- Outbox zerada ${f(d.outboxCatchUpS)} s após a fila esvaziar; transações persistidas (acumulado): ${kv(d.transactionsByStatus)}; DLQ: ${d.dlqDepth}`,
       ...metricsLines(d.metrics),
       ...pgLines(d.pg),
+      ...samplerLine(d.samplerFailures),
       '',
       ...containersTable(d.containers),
     );
@@ -135,14 +143,16 @@ function scenarioSection(r: ScenarioResult): string[] {
   return out;
 }
 
-export function renderSummary(env: Environment, results: ScenarioResult[]): string {
+/** The environment header of `summary.md`. */
+export function renderEnvironment(env: Environment): string[] {
   return [
-    '# Load test summary',
-    '',
     `- Host: ${env.cpu}, ${env.cores} cores, ${f(env.memoryGiB)} GiB, ${env.os}`,
     `- Docker ${env.docker}; VM: ${env.dockerVm}`,
     `- k6: ${env.k6}; Bun ${env.bun}; PostgreSQL ${env.postgres}; LocalStack ${env.localstack}`,
-    '',
-    ...results.flatMap(scenarioSection),
-  ].join('\n');
+  ];
+}
+
+/** `environment`: the header lines, already rendered (see `renderEnvironment`). */
+export function renderSummary(environment: string[], results: ScenarioResult[]): string {
+  return ['# Load test summary', '', ...environment, '', ...results.flatMap(scenarioSection)].join('\n');
 }

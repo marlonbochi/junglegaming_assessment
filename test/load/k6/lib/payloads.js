@@ -36,6 +36,8 @@ export function countStatus(res) {
 /** The thresholds every scenario shares. Correctness is absolute; the error rate is an SLO. */
 export const correctnessThresholds = { 'checks{type:correctness}': ['rate==1'] };
 export const errorThresholds = { http_req_failed: ['rate<0.01'] };
+/** Past saturation timeouts are expected, but a 5xx or an unexpected 4xx never is. */
+export const serverErrorThresholds = { responses_5xx: ['count==0'], responses_unexpected_4xx: ['count==0'] };
 export const trendStats = ['avg', 'min', 'med', 'max', 'p(90)', 'p(95)', 'p(99)'];
 
 const randInt = (min, max) => min + Math.floor(Math.random() * (max - min + 1));

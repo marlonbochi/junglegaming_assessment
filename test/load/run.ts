@@ -19,6 +19,7 @@ import { parseArgs } from 'node:util';
 import {
   analyseContainers,
   analysePg,
+  capacityOf,
   countOf,
   failedThresholds,
   httpSummary,
@@ -28,7 +29,7 @@ import {
 } from './support/analysis';
 import { ROOT, compose, containerIds, docker, metricsFromContainer, psql } from './support/docker';
 import { delta, merge, parsePrometheus, type Series } from './support/prometheus';
-import { renderSummary, type Environment, type ScenarioResult } from './support/report';
+import { renderEnvironment, renderSummary, type Environment, type ScenarioResult } from './support/report';
 import { dockerStats, pgSample, sampleEvery } from './support/samplers';
 
 const { values: args } = parseArgs({
@@ -68,6 +69,10 @@ async function stackUp(consumers: number): Promise<void> {
 }
 
 async function stackDown(): Promise<void> {
+  // `down` leaves a running `compose run` container (k6) and its network behind: remove one-offs first.
+  const oneOffs = await docker(['ps', '-aq', '--filter', 'label=com.docker.compose.project=wagering', '--filter', 'label=com.docker.compose.oneoff=True']);
+  const ids = oneOffs.stdout.split('\n').filter((id) => id.length > 0);
+  if (ids.length > 0) await docker(['rm', '-f', ...ids]);
   await compose(['down', '-v', '--remove-orphans'], { allowFail: true });
 }
 
@@ -148,7 +153,7 @@ const diff = (a: Record<string, number>, b: Record<string, number>) =>
 /** pg (1 s) and docker stats (~3 s) samplers, with a progress line every ~10 s. */
 function startObservers() {
   let n = 0;
-  const pg = sampleEvery(1000, async () => {
+  const pg = sampleEvery('pg_stat_activity', 1000, async () => {
     const s = await pgSample();
     if (n++ % 10 === 0) {
       const active = s.backends.filter((b) => b.state === 'active').reduce((sum, b) => sum + b.count, 0);
@@ -156,11 +161,15 @@ function startObservers() {
     }
     return s;
   });
-  const stats = sampleEvery(3000, dockerStats);
+  const stats = sampleEvery('docker stats', 3000, dockerStats);
   return {
     async stop() {
       const [p, d] = await Promise.all([pg.stop(), stats.stop()]);
-      return { pg: p, stats: d };
+      const problems: string[] = [];
+      for (const [name, r] of [['pg_stat_activity', p], ['docker stats', d]] as const) {
+        if (r.samples.length === 0) problems.push(`no ${name} samples (${r.failures} failed): the evidence is missing`);
+      }
+      return { pg: p, stats: d, samplerFailures: { pg: p.failures, dockerStats: d.failures }, problems };
     },
   };
 }
@@ -226,6 +235,7 @@ async function runHttpScenario(s: HttpScenario, consumers: number): Promise<Scen
     const observers = startObservers();
     const k6 = await runK6(s.script, s.name, { ...s.env, WALLETS_FILE: `/results/${stamp}/${s.name}.wallets.json` });
     const observed = await observers.stop();
+    failures.push(...observed.problems);
     const outboxCatchUpS = await outboxCatchUp();
     const after = await scrape();
     const db = diff(await dbStats(), dbBefore);
@@ -252,6 +262,7 @@ async function runHttpScenario(s: HttpScenario, consumers: number): Promise<Scen
       db,
       pg: analysePg(observed.pg.samples.map((x) => x.value)),
       containers: analyseContainers(observed.stats.samples.map((x) => x.value)),
+      samplerFailures: observed.samplerFailures,
       outboxCatchUpS,
       reconciliation: { checked: reconciliation.checked, inconsistent: reconciliation.inconsistent.length },
       failures,
@@ -280,6 +291,7 @@ interface DrainRound {
   containers: ReturnType<typeof analyseContainers>;
   /** First message gone → ≤ 1% of the messages left (bulk throughput, without the tail). */
   drain99Seconds: number;
+  samplerFailures: Record<string, number>;
   queueTimeline: Array<{ t: number; visible: number; inFlight: number }>;
 }
 
@@ -332,6 +344,7 @@ async function runDrain(messages: number, rounds: number[]): Promise<ScenarioRes
       await scaling;
       const after = await scrape();
       const observed = await observers.stop();
+      failures.push(...observed.problems.map((p) => `consumer=${consumers}: ${p}`));
       const outboxCatchUpS = await outboxCatchUp();
       const rows = await psql("SELECT status, count(*) FROM wager_transactions WHERE provider_id = 'provider-load' GROUP BY status");
       const transactionsByStatus = Object.fromEntries(rows.map(([status = '', count = '0']) => [status, Number(count)]));
@@ -363,6 +376,7 @@ async function runDrain(messages: number, rounds: number[]): Promise<ScenarioRes
         metrics: serviceMetrics(delta(after, before)),
         pg: analysePg(observed.pg.samples.map((x) => x.value)),
         containers: analyseContainers(observed.stats.samples.map((x) => x.value)),
+        samplerFailures: observed.samplerFailures,
         queueTimeline: timeline,
       });
       log(`consumer=${consumers}: drained ${queuedBeforeStart} in ${drainSeconds.toFixed(1)}s`);
@@ -390,25 +404,6 @@ const LEVELS = (args.levels ?? '100,200,300,400,500,600,700').split(',').map(Num
 const RAMP_S = 5;
 const HOLD_S = 30;
 const stageTag = (level: number) => `stage:L${String(level).padStart(4, '0')}`;
-
-/**
- * `maxThroughputRps`: the highest rate actually achieved on any held level (the saturation
- * throughput). `sustainableRps`: the highest level held with ≥ 97% of the target rate, < 1% errors and
- * p95 ≤ 100 ms (the latency-bounded capacity); `saturatedAt`: the first level that misses it.
- */
-function capacityOf(slices: ScenarioResult['slices'], levels: number[]): NonNullable<ScenarioResult['capacity']> {
-  let sustainableRps = 0;
-  let saturatedAt: number | null = null;
-  for (const [i, level] of levels.entries()) {
-    const s = slices?.[i];
-    if (!s) break;
-    const ok = s.rps >= 0.97 * level && s.errorRate < 0.01 && s.latencyMs.p95 <= 100;
-    if (ok && saturatedAt === null) sustainableRps = level;
-    else if (!ok && saturatedAt === null) saturatedAt = level;
-  }
-  const maxThroughputRps = Math.max(0, ...(slices ?? []).map((s) => s.rps));
-  return { sustainableRps, maxThroughputRps, saturatedAt };
-}
 
 async function latestCapacity(): Promise<number | undefined> {
   const dirs = (await readdir(RESULTS).catch(() => [] as string[])).sort().reverse();
@@ -465,6 +460,7 @@ async function main(): Promise<void> {
   await stackDown();
   await stackUp(1);
   const env = await environment();
+  await Bun.write(join(outDir, 'environment.json'), JSON.stringify(env, null, 2));
   await stackDown();
 
   const results: ScenarioResult[] = [];
@@ -549,13 +545,25 @@ async function main(): Promise<void> {
     log(`${name}: ${result.failures.length === 0 ? 'PASS' : `FAIL — ${result.failures.join('; ')}`}`);
   }
 
-  await Bun.write(join(outDir, 'summary.md'), renderSummary(env, results));
+  await Bun.write(join(outDir, 'summary.md'), renderSummary(renderEnvironment(env), results));
   log(`summary → ${join(outDir, 'summary.md')}`);
   const failed = results.filter((r) => r.failures.length > 0);
   if (failed.length > 0) {
     log(`FAILED: ${failed.map((r) => r.name).join(', ')}`);
     process.exit(1);
   }
+}
+
+// Ctrl-C or a kill must not leave the `wagering` stack running: same teardown as a failure.
+let interrupted = false;
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(signal, async () => {
+    if (interrupted) return;
+    interrupted = true;
+    log(`${signal}: tearing the stack down`);
+    await stackDown();
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
 }
 
 await main().catch(async (e) => {

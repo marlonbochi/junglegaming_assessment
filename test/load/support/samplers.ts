@@ -1,7 +1,10 @@
 import { docker, psql } from './docker';
 
-/** Calls `sample` every `intervalMs` (never overlapping) until `stop()`; failed samples are counted, not fatal. */
-export function sampleEvery<T>(intervalMs: number, sample: () => Promise<T>) {
+/**
+ * Calls `sample` every `intervalMs` (never overlapping) until `stop()`. A failed sample is counted and
+ * warned about (the first 3 with their error), never fatal: the caller decides what too few samples mean.
+ */
+export function sampleEvery<T>(name: string, intervalMs: number, sample: () => Promise<T>) {
   const samples: Array<{ t: number; value: T }> = [];
   let failures = 0;
   let running = true;
@@ -10,8 +13,8 @@ export function sampleEvery<T>(intervalMs: number, sample: () => Promise<T>) {
       const started = Date.now();
       try {
         samples.push({ t: started, value: await sample() });
-      } catch {
-        failures++;
+      } catch (e) {
+        if (failures++ < 3) console.warn(`[load] ${name} sample failed: ${e instanceof Error ? e.message.split('\n')[0] : String(e)}`);
       }
       await Bun.sleep(Math.max(0, intervalMs - (Date.now() - started)));
     }
@@ -21,6 +24,7 @@ export function sampleEvery<T>(intervalMs: number, sample: () => Promise<T>) {
     async stop() {
       running = false;
       await loop;
+      if (failures > 0) console.warn(`[load] ${name}: ${failures} failed samples, ${samples.length} ok`);
       return { samples, failures };
     },
   };
