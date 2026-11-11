@@ -39,7 +39,7 @@ export class WorkersModule implements BeforeApplicationShutdown {
           inject: [UNIT_OF_WORK, SQS, CLOCK, FAULTS, METRICS, JITTER],
           useFactory: (uow: UnitOfWork, sqs: SQSClient, clock: Clock, faults: FaultInjector, metrics: Metrics, jitter: () => number) =>
             new OutboxPublisherWorker(
-              new PublishOutbox(uow, new SqsEventPublisher(sqs, env.EVENTS_QUEUE_URL), clock, faults, metrics, jitter),
+              new PublishOutbox(uow, new SqsEventPublisher(sqs, env.EVENTS_QUEUE_URL), clock, faults, metrics, logger, jitter),
               logger,
               jitter,
               { batchSize: env.OUTBOX_BATCH, pollMs: env.OUTBOX_POLL_MS },

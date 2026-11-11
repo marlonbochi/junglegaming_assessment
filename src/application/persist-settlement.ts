@@ -45,8 +45,9 @@ export async function persistSettlement(
     await r.outbox.enqueue(OutboxMessage.enqueue(event));
   }
 
-  // A decided transaction may be what pending dependents wait for.
-  if (tx.isTerminal()) await r.transactions.nudgeDependents(tx.providerId, tx.externalTransactionId, s.now);
+  // A decided transaction may be what pending dependents wait for. Only this (locked) wallet's: a
+  // dependent in another wallet would be a REFERENCE_MISMATCH anyway and resolves on its own backoff.
+  if (tx.isTerminal()) await r.transactions.nudgeDependents(tx.walletId, tx.providerId, tx.externalTransactionId, s.now);
 }
 
 /** The reference is read without a lock: same wallet is already locked, another wallet is a mismatch. */

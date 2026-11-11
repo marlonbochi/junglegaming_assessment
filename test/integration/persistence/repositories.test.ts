@@ -194,10 +194,11 @@ describe('wager transactions', () => {
     expect(reversed).toEqual([true, true, false, false, false]);
   });
 
-  test('nudgeDependents sets next_attempt_at = now for PENDING_REFERENCE dependents only', async () => {
+  test('nudgeDependents sets next_attempt_at = now for PENDING_REFERENCE dependents of the same wallet only', async () => {
     const { wallet } = await uow.run((r) => persistOpenedWallet(r));
-    const pendingOn = (provider: string, reference: string, kind: 'REFUND' | 'WIN' = 'REFUND') => {
-      const t = walletTx(wallet, { kind, providerId: provider, referenceExternalTransactionId: reference });
+    const { wallet: otherWallet } = await uow.run((r) => persistOpenedWallet(r));
+    const pendingOn = (provider: string, reference: string, kind: 'REFUND' | 'WIN' = 'REFUND', on = wallet) => {
+      const t = walletTx(on, { kind, providerId: provider, referenceExternalTransactionId: reference });
       t.markPendingReference(later(60_000), now);
       return t;
     };
@@ -205,14 +206,18 @@ describe('wager transactions', () => {
     const dependentB = pendingOn('provider-a', 'ext-target', 'WIN');
     const otherProvider = pendingOn('provider-b', 'ext-target');
     const otherReference = pendingOn('provider-a', 'ext-other');
+    // Constitution #10: its wallet is not locked by the caller, so it must not be touched.
+    const otherWalletDependent = pendingOn('provider-a', 'ext-target', 'REFUND', otherWallet);
     const rejected = walletTx(wallet, { kind: 'WIN', referenceExternalTransactionId: 'ext-target' });
     rejected.reject(FailureCode.ReferenceNotFound, wallet.balance, now);
     await uow.run(async (r) => {
-      for (const t of [dependentA, dependentB, otherProvider, otherReference, rejected]) await r.transactions.insert(t);
+      for (const t of [dependentA, dependentB, otherProvider, otherReference, otherWalletDependent, rejected]) {
+        await r.transactions.insert(t);
+      }
     });
 
     const nudgeAt = later(5);
-    const count = await uow.run((r) => r.transactions.nudgeDependents('provider-a', 'ext-target', nudgeAt));
+    const count = await uow.run((r) => r.transactions.nudgeDependents(wallet.id, 'provider-a', 'ext-target', nudgeAt));
 
     expect(count).toBe(2);
     const reload = (id: string) => uow.run((r) => r.transactions.findById(id));
@@ -220,6 +225,7 @@ describe('wager transactions', () => {
     expect((await reload(dependentB.id))?.nextAttemptAt).toEqual(nudgeAt);
     expect((await reload(otherProvider.id))?.nextAttemptAt).toEqual(later(60_000));
     expect((await reload(otherReference.id))?.nextAttemptAt).toEqual(later(60_000));
+    expect((await reload(otherWalletDependent.id))?.nextAttemptAt).toEqual(later(60_000));
     expect((await reload(rejected.id))?.status).toBe(WagerTransactionStatus.Rejected);
   });
 

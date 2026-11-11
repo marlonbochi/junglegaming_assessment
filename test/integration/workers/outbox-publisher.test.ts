@@ -65,7 +65,7 @@ afterAll(async () => {
 });
 
 function publishOutbox(
-  over: { unitOfWork?: MikroOrmUnitOfWork; publisher?: EventPublisher; faults?: FaultInjector } = {},
+  over: { unitOfWork?: MikroOrmUnitOfWork; publisher?: EventPublisher; faults?: FaultInjector; logger?: AppLogger } = {},
 ): PublishOutbox {
   return new PublishOutbox(
     over.unitOfWork ?? uow,
@@ -73,6 +73,7 @@ function publishOutbox(
     clock,
     over.faults ?? noFaults,
     metrics,
+    over.logger ?? noopLogger,
     () => 0,
   );
 }
@@ -137,10 +138,19 @@ function eventIdsOf(messages: Message[]): Set<string> {
   return new Set(messages.map((m) => JSON.parse(m.Body ?? '{}').eventId as string));
 }
 
-function capturingLogger(): AppLogger & { errors: Array<Record<string, unknown>> } {
+function capturingLogger(): AppLogger & { errors: Array<Record<string, unknown>>; warnings: Array<Record<string, unknown>> } {
   const errors: Array<Record<string, unknown>> = [];
-  return { ...noopLogger, errors, error: (obj: object, msg: string) => void errors.push({ ...obj, msg }) };
+  const warnings: Array<Record<string, unknown>> = [];
+  return {
+    ...noopLogger,
+    errors,
+    warnings,
+    error: (obj: object, msg: string) => void errors.push({ ...obj, msg }),
+    warn: (obj: object, msg: string) => void warnings.push({ ...obj, msg }),
+  };
 }
+
+const missingQueueUrl = () => `${q.eventsUrl.replace(/[^/]+$/, '')}missing-${newId()}.fifo`;
 
 describe('PublishOutbox', () => {
   test('publishes pending events with envelope and marks them published', async () => {
@@ -182,11 +192,36 @@ describe('PublishOutbox', () => {
     expect(metrics.named('retry')).toEqual([]);
   });
 
+  test('SqsEventPublisher reports why SQS refused each message', async () => {
+    const valid = outboxMessage();
+    // SQS refuses this one entry (MessageGroupId is limited to 128 characters), not the batch.
+    const refused = outboxMessage({ aggregateId: 'g'.repeat(200) });
+
+    const outcome = await new SqsEventPublisher(sqs, q.eventsUrl).publishBatch([valid, refused]);
+    expect(outcome).toEqual({
+      published: [valid.id],
+      failed: [{ id: refused.id, reason: expect.stringContaining('InvalidParameterValueException') }],
+    });
+
+    const unreachable = await new SqsEventPublisher(sqs, missingQueueUrl()).publishBatch([valid]);
+    expect(unreachable).toEqual({ published: [], failed: [{ id: valid.id, reason: expect.stringContaining('QueueDoesNotExist') }] });
+  });
+
   test('SQS failure schedules retry with backoff and keeps event pending', async () => {
     const [id] = await enqueue(1, 1);
-    const unreachable = new SqsEventPublisher(sqs, `${q.eventsUrl.replace(/[^/]+$/, '')}missing-${newId()}.fifo`);
+    const unreachable = new SqsEventPublisher(sqs, missingQueueUrl());
+    const logger = capturingLogger();
 
-    expect(await publishOutbox({ publisher: unreachable }).execute(50)).toEqual({ published: 0, retried: 1 });
+    expect(await publishOutbox({ publisher: unreachable, logger }).execute(50)).toEqual({ published: 0, retried: 1 });
+    expect(logger.warnings).toEqual([
+      {
+        outboxMessageId: id,
+        eventType: 'WalletBalanceChanged',
+        attempts: 1,
+        reason: expect.stringContaining('QueueDoesNotExist'),
+        msg: 'outbox message publish failed, retry scheduled',
+      },
+    ]);
     const [row] = await db.sql`SELECT attempts, next_attempt_at, published_at FROM outbox_messages WHERE id = ${id}`;
     // attempt 1: base 1s · 2^1, jitter off.
     expect(row).toEqual({ attempts: 1, next_attempt_at: new Date(T0.getTime() + 2000), published_at: null });

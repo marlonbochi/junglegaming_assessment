@@ -13,6 +13,7 @@ import type { Metrics } from '../../application/ports/metrics';
 import type { SubmitResult, SubmitWagerTransaction } from '../../application/use-cases/submit-wager-transaction';
 import { backoffDelayMs, type BackoffConfig } from '../../domain/messaging/backoff';
 import { enrichRequestContext, requestContext } from '../../infrastructure/observability/request-context';
+import { describeError } from '../describe-error';
 import { decide, type ConsumerDecision, type ProcessingOutcome } from './consumer-decision';
 import { parseWagerMessage, type WagerMessage } from './wager-message.schema';
 
@@ -266,10 +267,4 @@ export class WagerTransactionConsumer {
 
 function receiveCountOf(m: Message): number {
   return Number(m.Attributes?.ApproximateReceiveCount ?? 1);
-}
-
-function describeError(e: unknown): string {
-  if (!(e instanceof Error)) return String(e);
-  const cause = e.cause instanceof Error ? ` (cause: ${e.cause.name}: ${e.cause.message})` : '';
-  return `${e.name}: ${e.message}${cause}`;
 }

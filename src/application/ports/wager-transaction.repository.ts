@@ -8,7 +8,8 @@ export interface WagerTransactionRepository {
   isReversed(transactionId: string): Promise<boolean>;
   insert(t: WagerTransaction): Promise<void>;
   update(t: WagerTransaction): Promise<void>;
-  nudgeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number>;
+  /** Makes due now the PENDING_REFERENCE transactions of `walletId` (locked by the caller) waiting for this one. */
+  nudgeDependents(walletId: string, providerId: string, externalTransactionId: string, now: Date): Promise<number>;
   findDuePendingReferences(now: Date, limit: number): Promise<Array<{ id: string; walletId: string }>>;
   countPendingReferences(): Promise<number>;
 }

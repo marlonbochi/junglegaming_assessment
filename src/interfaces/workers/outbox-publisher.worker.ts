@@ -15,7 +15,6 @@ export class OutboxPublisherWorker {
     this.loop = new PollingLoop(
       async () => {
         const { published, retried } = await publish.execute(config.batchSize);
-        if (retried > 0) logger.warn({ worker: 'outbox-publisher', published, retried }, 'outbox publish failed, retry scheduled');
         return published + retried > 0;
       },
       logger,

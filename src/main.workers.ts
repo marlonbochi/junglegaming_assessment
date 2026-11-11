@@ -8,12 +8,12 @@ import { HealthService } from './infrastructure/observability/health';
 import { createLogger } from './infrastructure/observability/logger';
 import type { PromMetrics } from './infrastructure/observability/metrics';
 import { createSqsClient } from './infrastructure/sqs/sqs-client';
+import { describeError } from './interfaces/describe-error';
 import { NestPinoLogger } from './interfaces/http/nest-logger';
 import { startOpsHttp } from './interfaces/ops-http';
 import { METRICS } from './interfaces/tokens';
 import { OutboxPublisherWorker } from './interfaces/workers/outbox-publisher.worker';
 import { PendingReferenceWorker } from './interfaces/workers/pending-reference.worker';
-import { describeError } from './interfaces/workers/polling-loop';
 import { WorkersModule } from './interfaces/workers/workers.module';
 
 /** Test seams; production uses the defaults built from `env`. */

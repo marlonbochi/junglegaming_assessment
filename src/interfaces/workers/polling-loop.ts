@@ -1,5 +1,6 @@
 import type { AppLogger } from '../../application/ports/logger';
 import { backoffDelayMs } from '../../domain/messaging/backoff';
+import { describeError } from '../describe-error';
 
 /** Returns true when the iteration found work, so the loop runs again without waiting. */
 export type Iteration = () => Promise<boolean>;
@@ -68,10 +69,4 @@ export class PollingLoop {
       timer = setTimeout(done, ms);
     });
   }
-}
-
-export function describeError(e: unknown): string {
-  if (!(e instanceof Error)) return String(e);
-  const cause = e.cause instanceof Error ? ` (cause: ${e.cause.name}: ${e.cause.message})` : '';
-  return `${e.name}: ${e.message}${cause}`;
 }

@@ -341,6 +341,25 @@ describe('SubmitWagerTransaction', () => {
     ]);
   });
 
+  test('a dependent in another wallet is not nudged (its wallet is not locked by the submit)', async () => {
+    const wallet = await openWallet('100.00');
+    const otherWallet = await openWallet('100.00');
+    const bet = wagerCommand(wallet, { money: brl('30.00') });
+    const foreign = await submit(
+      wagerCommand(otherWallet, {
+        kind: WagerTransactionKind.Rollback,
+        money: brl('30.00'),
+        referenceExternalTransactionId: bet.externalTransactionId,
+      }),
+    );
+    expect(foreign.status).toBe(Status.PendingReference);
+
+    clock.set(new Date(T0.getTime() + 1000));
+    expect(await submit(bet)).toMatchObject({ status: Status.Processed });
+
+    expect((await txRow(foreign.transactionId)).next_attempt_at).toEqual(new Date(T0.getTime() + 2000));
+  });
+
   test('REFUND of a processed BET credits it back and links the reference', async () => {
     const wallet = await openWallet('100.00');
     const bet = wagerCommand(wallet, { money: brl('30.00') });

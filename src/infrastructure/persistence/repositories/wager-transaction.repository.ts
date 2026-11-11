@@ -47,11 +47,13 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
     assertSingleRow(await this.em.nativeUpdate(WagerTransactionSchema, { id }, changes), `wager transaction ${id}`);
   }
 
-  nudgeDependents(providerId: string, externalTransactionId: string, now: Date): Promise<number> {
+  /** Only the caller's (locked) wallet: dependents in other wallets would be written without their wallet lock. */
+  nudgeDependents(walletId: string, providerId: string, externalTransactionId: string, now: Date): Promise<number> {
     return this.em.nativeUpdate(
       WagerTransactionSchema,
       {
         status: WagerTransactionStatus.PendingReference,
+        walletId,
         providerId,
         referenceExternalTransactionId: externalTransactionId,
       },
