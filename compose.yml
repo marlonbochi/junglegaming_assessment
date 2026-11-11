@@ -1,6 +1,7 @@
 x-app: &app
   build: .
   restart: unless-stopped
+  stop_grace_period: 30s
   environment: &app-env
     DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
     AWS_ENDPOINT_URL: http://localstack:4566
