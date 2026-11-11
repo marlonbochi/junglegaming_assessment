@@ -16,7 +16,7 @@ describe('classifyPgError', () => {
     expect(classifyPgError(pgError('55P03'))).toBe('lock_timeout');
   });
 
-  test.each(['57014', '08000', '08006', '08P01', '53300', '57P01', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'])(
+  test.each(['57014', '08000', '08006', '08P01', '53300', '57P01', '40P01', '40001', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'])(
     '%s is transient',
     (code) => {
       expect(classifyPgError(pgError(code))).toBe('transient');
@@ -27,7 +27,7 @@ describe('classifyPgError', () => {
     expect(classifyPgError(new Error('wrapped', { cause: pgError('ECONNREFUSED') }))).toBe('transient');
   });
 
-  test.each(['23000', '23514', '23503', '40P01', '42P01'])('%s is other', (code) => {
+  test.each(['23000', '23514', '23503', '42P01'])('%s is other', (code) => {
     expect(classifyPgError(pgError(code))).toBe('other');
   });
 

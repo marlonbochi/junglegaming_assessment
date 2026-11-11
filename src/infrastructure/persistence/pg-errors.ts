@@ -1,6 +1,7 @@
 export type PgErrorClass = 'unique_violation' | 'lock_timeout' | 'transient' | 'other';
 
-const TRANSIENT_CODES = new Set(['57014', '53300', '57P01', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']);
+/** Deadlock (40P01) and serialization failure (40001) roll the whole transaction back, so a retry is safe. */
+const TRANSIENT_CODES = new Set(['57014', '53300', '57P01', '40P01', '40001', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']);
 /** SQLSTATE class 08: connection exception. */
 const CONNECTION_EXCEPTION = /^08[0-9A-Z]{3}$/;
 const MAX_CAUSE_DEPTH = 5;
