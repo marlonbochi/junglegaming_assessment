@@ -21,7 +21,7 @@ services:
     volumes:
       - ./infra/localstack/init/ready.d:/etc/localstack/init/ready.d
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:4566/_localstack/health | grep -Eq '\"sqs\": \"(available|running)\"'"]
+      test: ["CMD-SHELL", "awslocal sqs list-queues | grep -q wallet-events.fifo"]
       interval: 3s
       timeout: 5s
       retries: 30
