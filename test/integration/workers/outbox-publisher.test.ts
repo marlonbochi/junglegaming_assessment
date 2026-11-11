@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from 'bun:test';
-import { DeleteMessageBatchCommand, ReceiveMessageCommand, type Message, type SQSClient } from '@aws-sdk/client-sqs';
+import type { Message, SQSClient } from '@aws-sdk/client-sqs';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import { TransientInfraError } from '../../../src/application/errors';
 import type { EventPublisher } from '../../../src/application/ports/event-publisher';
@@ -20,7 +20,7 @@ import { eventually } from '../../support/eventually';
 import { assertLedgerConsistency } from '../../support/ledger-consistency';
 import { newId, outboxMessage, testOrm } from '../../support/persistence';
 import { sqlClient } from '../../support/sql';
-import { createTestQueues, type TestQueues } from '../../support/sqs';
+import { createTestQueues, drainUntil, eventIdsOf, type TestQueues } from '../../support/sqs';
 import { fixedClock, recordingMetrics, wagerCommand } from '../../support/use-cases';
 
 let db: TestDatabase;
@@ -101,41 +101,14 @@ async function enqueue(count: number, groups = 25): Promise<string[]> {
   return messages.map((m) => m.id);
 }
 
-/** Receives (and deletes, so FIFO groups keep flowing) until `expected` distinct eventIds arrived. */
-async function receiveEvents(expected: number, timeoutMs = 30_000): Promise<Message[]> {
-  const received: Message[] = [];
-  const eventIds = new Set<string>();
-  const deadline = Date.now() + timeoutMs;
-  while (eventIds.size < expected) {
-    if (Date.now() > deadline) throw new Error(`received ${eventIds.size} of ${expected} events`);
-    const { Messages = [] } = await sqs.send(
-      new ReceiveMessageCommand({
-        QueueUrl: q.eventsUrl,
-        MaxNumberOfMessages: 10,
-        WaitTimeSeconds: 1,
-        MessageSystemAttributeNames: ['All'],
-      }),
-    );
-    if (Messages.length === 0) continue;
-    received.push(...Messages);
-    for (const m of Messages) eventIds.add(JSON.parse(m.Body ?? '{}').eventId);
-    await sqs.send(
-      new DeleteMessageBatchCommand({
-        QueueUrl: q.eventsUrl,
-        Entries: Messages.map((m, i) => ({ Id: String(i), ReceiptHandle: m.ReceiptHandle })),
-      }),
-    );
-  }
-  return received;
+/** Receives (and deletes) until `expected` distinct eventIds arrived. */
+function receiveEvents(expected: number): Promise<Message[]> {
+  return drainUntil(sqs, q.eventsUrl, (received) => eventIdsOf(received).size >= expected);
 }
 
 async function pendingRows(): Promise<number> {
   const [row] = await db.sql`SELECT count(*)::int AS n FROM outbox_messages WHERE published_at IS NULL`;
   return row.n;
-}
-
-function eventIdsOf(messages: Message[]): Set<string> {
-  return new Set(messages.map((m) => JSON.parse(m.Body ?? '{}').eventId as string));
 }
 
 function capturingLogger(): AppLogger & { errors: Array<Record<string, unknown>>; warnings: Array<Record<string, unknown>> } {

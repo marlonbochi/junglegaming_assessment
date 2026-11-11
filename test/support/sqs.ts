@@ -1,5 +1,6 @@
 import {
   CreateQueueCommand,
+  DeleteMessageBatchCommand,
   DeleteQueueCommand,
   GetQueueAttributesCommand,
   ReceiveMessageCommand,
@@ -115,4 +116,38 @@ export async function queueCounts(sqs: SQSClient, queueUrl: string): Promise<{ v
     visible: Number(Attributes.ApproximateNumberOfMessages),
     inFlight: Number(Attributes.ApproximateNumberOfMessagesNotVisible),
   };
+}
+
+/**
+ * Receives and deletes (so FIFO groups keep flowing) until `done(received)` holds; throws on timeout.
+ * Every receipt is returned, duplicates included.
+ */
+export async function drainUntil(
+  sqs: SQSClient,
+  queueUrl: string,
+  done: (received: Message[]) => boolean,
+  opts: { timeoutMs?: number } = {},
+): Promise<Message[]> {
+  const received: Message[] = [];
+  const deadline = Date.now() + (opts.timeoutMs ?? 30_000);
+  while (!done(received)) {
+    if (Date.now() > deadline) throw new Error(`drained ${received.length} messages without reaching the expected state`);
+    const { Messages = [] } = await sqs.send(
+      new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1, MessageSystemAttributeNames: ['All'] }),
+    );
+    if (Messages.length === 0) continue;
+    received.push(...Messages);
+    await sqs.send(
+      new DeleteMessageBatchCommand({
+        QueueUrl: queueUrl,
+        Entries: Messages.map((m, i) => ({ Id: String(i), ReceiptHandle: m.ReceiptHandle })),
+      }),
+    );
+  }
+  return received;
+}
+
+/** Distinct `eventId`s of integration events received from `wallet-events.fifo`. */
+export function eventIdsOf(messages: Message[]): Set<string> {
+  return new Set(messages.map((m) => JSON.parse(m.Body ?? '{}').eventId as string));
 }
