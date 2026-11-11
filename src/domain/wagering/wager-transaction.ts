@@ -117,18 +117,18 @@ export class WagerTransaction {
     this.state.updatedAt = at;
   }
 
-  markPendingReference(nextAttemptAt: Date): void {
+  markPendingReference(nextAttemptAt: Date, at: Date): void {
     this.assertStatus('markPendingReference', Pending);
     this.state.status = PendingReference;
     this.state.nextAttemptAt = nextAttemptAt;
-    this.state.updatedAt = nextAttemptAt;
+    this.state.updatedAt = at;
   }
 
-  scheduleReferenceRetry(nextAttemptAt: Date): void {
+  scheduleReferenceRetry(nextAttemptAt: Date, at: Date): void {
     this.assertStatus('scheduleReferenceRetry', PendingReference);
     this.state.attempts += 1;
     this.state.nextAttemptAt = nextAttemptAt;
-    this.state.updatedAt = nextAttemptAt;
+    this.state.updatedAt = at;
   }
 
   fail(code: FailureCode, at: Date): void {

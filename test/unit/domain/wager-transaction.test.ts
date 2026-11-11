@@ -24,7 +24,7 @@ const argsFor = (method: string): unknown[] => {
       return [FailureCode.InternalProcessingError, later];
     case 'markPendingReference':
     case 'scheduleReferenceRetry':
-      return [later];
+      return [later, later];
     default:
       throw new Error(`no args for ${method}`);
   }
@@ -79,18 +79,39 @@ describe('WagerTransaction', () => {
 
   test('PENDING → PENDING_REFERENCE → retry increments attempts → PROCESSED', () => {
     const t = tx({ kind: 'REFUND', referenceExternalTransactionId: 'b1' });
-    t.markPendingReference(new Date(1));
+    t.markPendingReference(new Date(1), now);
     expect(t.status).toBe(WagerTransactionStatus.PendingReference);
-    t.scheduleReferenceRetry(new Date(2));
+    t.scheduleReferenceRetry(new Date(2), later);
     expect(t.attempts).toBe(1);
     expect(t.nextAttemptAt).toEqual(new Date(2));
     t.markProcessed('ref', brl('1.00'), now);
     expect(t.isTerminal()).toBe(true);
   });
 
+  test('pending reference transitions set updatedAt = at and keep nextAttemptAt as given', () => {
+    const t = tx({ kind: 'REFUND', referenceExternalTransactionId: 'b1' });
+    const next = new Date('2026-11-12T00:00:00Z');
+    t.markPendingReference(next, later);
+    expect(t.nextAttemptAt).toEqual(next);
+    expect(t.updatedAt).toEqual(later);
+    const next2 = new Date('2026-11-13T00:00:00Z');
+    const at2 = new Date('2026-11-11T02:00:00Z');
+    t.scheduleReferenceRetry(next2, at2);
+    expect(t.nextAttemptAt).toEqual(next2);
+    expect(t.updatedAt).toEqual(at2);
+  });
+
+  test.each(['markProcessed', 'reject', 'fail'])('%s clears nextAttemptAt', (m) => {
+    const t = tx({ kind: 'REFUND', referenceExternalTransactionId: 'b1' });
+    t.markPendingReference(later, now);
+    expect(t.nextAttemptAt).toEqual(later);
+    (t as any)[m](...argsFor(m));
+    expect(t.nextAttemptAt).toBeUndefined();
+  });
+
   test.each(['reject', 'fail', 'markProcessed'])('PENDING_REFERENCE → %s allowed', (m) => {
     const t = tx({ kind: 'REFUND', referenceExternalTransactionId: 'b1' });
-    t.markPendingReference(later);
+    t.markPendingReference(later, now);
     (t as any)[m](...argsFor(m));
     expect(t.isTerminal()).toBe(true);
   });
@@ -106,17 +127,17 @@ describe('WagerTransaction', () => {
 
   test('markPendingReference only from PENDING', () => {
     const t = bet();
-    t.markPendingReference(now);
-    expect(() => t.markPendingReference(now)).toThrow(InvalidTransactionStateError);
+    t.markPendingReference(later, now);
+    expect(() => t.markPendingReference(later, now)).toThrow(InvalidTransactionStateError);
   });
 
   test('scheduleReferenceRetry from PENDING throws', () =>
-    expect(() => bet().scheduleReferenceRetry(now)).toThrow(InvalidTransactionStateError));
+    expect(() => bet().scheduleReferenceRetry(later, now)).toThrow(InvalidTransactionStateError));
 
   test('isTerminal false for PENDING and PENDING_REFERENCE', () => {
     const t = bet();
     expect(t.isTerminal()).toBe(false);
-    t.markPendingReference(now);
+    t.markPendingReference(later, now);
     expect(t.isTerminal()).toBe(false);
   });
 
