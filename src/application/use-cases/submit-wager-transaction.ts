@@ -1,21 +1,16 @@
-import type { EventContext, IntegrationEvent } from '../../domain/events/integration-event';
-import { WagerTransactionPendingReference } from '../../domain/events/wager-transaction-pending-reference';
-import { WagerTransactionProcessed } from '../../domain/events/wager-transaction-processed';
-import { WagerTransactionRejected } from '../../domain/events/wager-transaction-rejected';
-import { WalletBalanceChanged } from '../../domain/events/wallet-balance-changed';
 import { computeNextAttemptAt, PENDING_REFERENCE_BACKOFF } from '../../domain/messaging/backoff';
 import { InboxMessage } from '../../domain/messaging/inbox-message';
-import { OutboxMessage } from '../../domain/messaging/outbox-message';
 import { Money, type MoneyProps } from '../../domain/money/money';
 import { DomainError } from '../../domain/shared/domain-error';
 import { FailureCode } from '../../domain/shared/failure-code';
-import { settle, type ReferenceLookup, type SettlementResult } from '../../domain/wagering/wager-settlement';
+import { settle } from '../../domain/wagering/wager-settlement';
 import { WagerTransaction } from '../../domain/wagering/wager-transaction';
 import { WagerTransactionStatus } from '../../domain/wagering/wager-transaction.types';
 import type { Wallet } from '../../domain/wallet/wallet';
 import type { SubmissionSource, WagerCommand } from '../commands/wager-command';
 import { ApplicationError, PermanentInfraError, TransientInfraError, UniqueViolationError } from '../errors';
 import { payloadHash } from '../hashing/payload-hash';
+import { lookupReference, persistSettlement } from '../persist-settlement';
 import type { Clock, IdGenerator } from '../ports/clock';
 import type { FaultInjector } from '../ports/fault-injector';
 import type { Metrics } from '../ports/metrics';
@@ -159,64 +154,22 @@ export class SubmitWagerTransaction {
     const settlement = settle({
       tx,
       wallet,
-      reference: await this.lookupReference(r, cmd),
+      reference: await lookupReference(r, cmd.providerId, cmd.referenceExternalTransactionId),
       ledgerEntryId: this.ids.next(),
       now,
       pendingRetryAt: computeNextAttemptAt(now, tx.attempts, { ...PENDING_REFERENCE_BACKOFF, jitter: this.jitter }),
     });
 
-    // 5. Persist transaction, ledger + wallet, events, inbox.
-    await r.transactions.insert(tx);
-    const entry = settlement.outcome === 'PROCESSED' ? settlement.ledgerEntry : undefined;
-    if (entry) {
-      await r.ledger.append(entry);
-      this.faults.hit('after_ledger_append');
-      await r.wallets.update(wallet);
-    }
-    for (const event of this.eventsFor(settlement, tx, wallet, s)) {
-      await r.outbox.enqueue(OutboxMessage.enqueue(event));
-    }
+    // 5–6. Transaction, ledger + wallet, events, dependents nudged; then the inbox.
+    await persistSettlement(
+      r,
+      { tx, wallet, settlement, write: 'insert', correlationId: s.correlationId, now },
+      { ids: this.ids, faults: this.faults },
+    );
     await recordInbox();
-
-    // 6. A decided transaction may be what pending dependents wait for: make them due now.
-    if (tx.isTerminal()) await r.transactions.nudgeDependents(tx.providerId, tx.externalTransactionId, now);
 
     this.faults.hit('before_commit');
     return { result: resultOf(tx, wallet, false), kind: tx.kind, inboxDuplicate };
-  }
-
-  /** The reference is read without a lock: same wallet is already locked, another wallet is a mismatch. */
-  private async lookupReference(r: TxRepositories, cmd: WagerCommand): Promise<ReferenceLookup> {
-    const ref = cmd.referenceExternalTransactionId;
-    if (!ref) return { kind: 'none' };
-    const transaction = await r.transactions.findByExternalId(cmd.providerId, ref);
-    if (!transaction) return { kind: 'missing' };
-    return { kind: 'found', transaction, alreadyReversed: await r.transactions.isReversed(transaction.id) };
-  }
-
-  private eventsFor(
-    settlement: SettlementResult,
-    tx: WagerTransaction,
-    wallet: Wallet,
-    s: Submission,
-  ): IntegrationEvent<unknown>[] {
-    const ctx = (): EventContext => ({
-      eventId: this.ids.next(),
-      correlationId: s.correlationId,
-      causationId: tx.id,
-      occurredAt: s.now,
-    });
-    switch (settlement.outcome) {
-      case 'PROCESSED': {
-        const processed = WagerTransactionProcessed.from(tx, wallet.balance, ctx());
-        if (!settlement.ledgerEntry) return [processed];
-        return [processed, WalletBalanceChanged.from(wallet, settlement.ledgerEntry, ctx())];
-      }
-      case 'REJECTED':
-        return [WagerTransactionRejected.from(tx, wallet.balance, ctx())];
-      case 'PENDING_REFERENCE':
-        return [WagerTransactionPendingReference.from(tx, ctx())];
-    }
   }
 
   /**
