@@ -108,6 +108,9 @@ export class Migration20261111000000Initial extends Migration {
           CHECK (kind = 'OPENING' OR (round_id IS NOT NULL AND game_id IS NOT NULL)),
         CONSTRAINT wager_transactions_reference_required_check
           CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR reference_external_transaction_id IS NOT NULL),
+        -- A processed reversal names what it reversed; otherwise single_reversal_key (NULLs are distinct) would not see it.
+        CONSTRAINT wager_transactions_reversal_reference_check
+          CHECK (kind NOT IN ('REFUND', 'ROLLBACK') OR status <> 'PROCESSED' OR reference_transaction_id IS NOT NULL),
         -- Lifecycle columns mirror the status exactly (see WagerTransaction transitions).
         CONSTRAINT wager_transactions_failure_code_status_check
           CHECK ((status IN ('REJECTED', 'FAILED')) = (failure_code IS NOT NULL)),

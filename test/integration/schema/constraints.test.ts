@@ -363,6 +363,14 @@ describe('wager_transactions', () => {
 
     await insertTx(db.sql, reversal('REFUND', processed()));
     await expect(insertTx(db.sql, reversal('ROLLBACK', processed()))).rejects.toThrow(/wager_transactions_single_reversal_key/);
+
+    // A processed reversal must name the reversed transaction, or the unique index would not see it.
+    await expect(insertTx(db.sql, reversal('REFUND', processed({ reference_transaction_id: null })))).rejects.toThrow(
+      /wager_transactions_reversal_reference_check/,
+    );
+    await expect(insertTx(db.sql, reversal('ROLLBACK', processed({ reference_transaction_id: null })))).rejects.toThrow(
+      /wager_transactions_reversal_reference_check/,
+    );
     await expect(insertTx(db.sql, reversal('REFUND', processed()))).rejects.toThrow(/wager_transactions_single_reversal_key/);
 
     // Non-processed reversals of the same reference may exist, but cannot become PROCESSED.
