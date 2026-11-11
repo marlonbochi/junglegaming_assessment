@@ -34,3 +34,14 @@ export class PermanentInfraError extends Error {
     this.name = 'PermanentInfraError';
   }
 }
+
+/** A unique constraint or index rejected the write; `constraint` names it. */
+export class UniqueViolationError extends Error {
+  constructor(
+    readonly constraint: string,
+    message?: string,
+  ) {
+    super(message ?? `Unique constraint violated: ${constraint}`);
+    this.name = 'UniqueViolationError';
+  }
+}
