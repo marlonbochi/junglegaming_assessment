@@ -1,0 +1,6 @@
+node_modules/
+.env
+*.log
+coverage/
+test/load/results/
+.DS_Store
