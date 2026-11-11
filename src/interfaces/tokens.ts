@@ -7,3 +7,4 @@ export const CLOCK = Symbol('CLOCK');
 export const IDS = Symbol('IDS');
 export const FAULTS = Symbol('FAULTS');
 export const PROVIDER_IDENTITY = Symbol('PROVIDER_IDENTITY');
+export const JITTER = Symbol('JITTER');

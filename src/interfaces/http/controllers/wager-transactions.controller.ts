@@ -8,7 +8,7 @@ import type { HttpRequest, HttpResponse } from '../http-types';
 import { FailedTransactionError } from '../problem-details';
 import { currentCorrelationId } from '../request-context.middleware';
 import { idempotencyKeyHeader, submitWagerBody, textParam, uuidParam, type SubmitWagerBody } from '../schemas';
-import { PROVIDER_IDENTITY } from '../tokens';
+import { PROVIDER_IDENTITY } from '../../tokens';
 import { ZodValidationPipe } from '../zod-validation.pipe';
 
 /** Spec §7: the HTTP status follows the decided status; FAILED only reaches here on replay. */

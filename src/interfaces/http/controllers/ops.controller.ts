@@ -2,7 +2,7 @@ import { Controller, Get, Inject, Res } from '@nestjs/common';
 import { HealthService, type Readiness } from '../../../infrastructure/observability/health';
 import type { PromMetrics } from '../../../infrastructure/observability/metrics';
 import type { HttpResponse } from '../http-types';
-import { METRICS } from '../tokens';
+import { METRICS } from '../../tokens';
 
 /** Health and metrics: public (NoopAuthGuard skips them). */
 @Controller()
