@@ -1,3 +1,5 @@
+name: wagering-test
+
 services:
   postgres:
     image: postgres:17-alpine
