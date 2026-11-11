@@ -234,6 +234,7 @@ Três camadas, todas persistentes (C#12):
 - Campos no hash: `providerId`, `externalTransactionId`, `playerId`, `walletId`, `roundId`, `gameId`, `kind`, `money` (`{amount, currency}`), `referenceExternalTransactionId` (omitido quando ausente).
 - Fora do hash: `idempotencyKey`, `messageId`, `correlationId`/`x-request-id`, `occurredAt`. São metadados de transporte; a mesma operação reenviada com outro `messageId` ou em outro instante é a mesma operação.
 - O mesmo hash é gravado em `wager_transactions.payload_hash` e em `inbox_messages.payload_hash`.
+- **Normalização antes do hash:** `playerId` e `walletId` (no corpo HTTP, nos parâmetros de path e no `data` das mensagens SQS) passam por `lowercaseUuid` (`src/interfaces/http/schemas.ts`, `z.uuid().transform(toLowerCase)`). Assim a mesma operação enviada com UUIDs em maiúsculas ou minúsculas gera o mesmo hash, e é a mesma grafia que o Postgres devolve para colunas `uuid`. Sem isso, a comparação de identidade em `settle`, que é por string, daria `PLAYER_WALLET_MISMATCH`. Os demais campos de texto (`providerId`, ids externos, `roundId`, `gameId`) não são normalizados: diferenças de caixa neles são operações diferentes.
 
 **Regras** (passos 2–3 do [fluxo](#fluxo-do-submit)):
 
@@ -250,7 +251,7 @@ Três camadas, todas persistentes (C#12):
 
 **Fora da transação** (`prepare`):
 
-1. O DTO já foi validado por zod (HTTP: `src/interfaces/http/schemas.ts`; SQS: `src/interfaces/sqs/wager-message.schema.ts`).
+1. O DTO já foi validado por zod (HTTP: `src/interfaces/http/schemas.ts`; SQS: `src/interfaces/sqs/wager-message.schema.ts`), com os UUIDs já em minúsculas.
 2. Calcula `payloadHash`, `now` e o id da transação (UUID v7), fixos para que uma nova execução seja idêntica.
 3. Constrói a `WagerTransaction` uma vez para validar (`Money.from`, valor > 0, referência obrigatória ou proibida, `OPENING`). Qualquer `DomainError` aqui vira `ApplicationError('INVALID_PAYLOAD')` (Ruling R2).
 
@@ -497,7 +498,6 @@ Fora de escopo por decisão:
 
 Limitações conhecidas no código, em ordem aproximada de impacto:
 
-- **UUIDs em maiúsculas.** O Postgres normaliza `uuid` para minúsculas, mas a comparação de identidade em `settle` é por string. Um `playerId`/`walletId` enviado em maiúsculas é gravado e relido em minúsculas, e o submit fica `REJECTED PLAYER_WALLET_MISMATCH`. O hash também difere entre as duas grafias. Correção: normalizar UUIDs para minúsculas no DTO (zod `transform`). Até lá, use UUIDs minúsculos.
 - **AWS real:** `AWS_ENDPOINT_URL` tem padrão (LocalStack), e com endpoint definido o cliente usa credenciais estáticas `test`/`test` (`src/infrastructure/sqs/sqs-client.ts`). As variáveis `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` do Compose são ignoradas. Rodar contra a AWS exige remover esse padrão e usar a cadeia de credenciais do SDK.
 - **Outbox:** o lote fica travado durante a chamada ao SQS e o cliente não tem `requestTimeout` explícito. Um SQS muito lento segura essas linhas (os outros publishers as pulam) até o SDK desistir. Próximo passo: timeout no cliente e/ou lease com `claimed_until`.
 - **Primeira resposta de um erro inesperado:** sai como 500 `retryable: true` mesmo quando o `FAILED` já foi gravado (só o replay diz `false`). Se a própria gravação do `FAILED` falha, o erro dessa gravação é descartado sem log.

@@ -45,7 +45,7 @@ docker compose down -v                              # derruba tudo e apaga os vo
 
 ## API HTTP
 
-Todos os valores monetários trafegam como `{"amount": "<decimal com exatamente 2 casas>", "currency": "<ISO-4217>"}`. `"10"`, `"10.5"`, `"1e3"` e `"-1.00"` são rejeitados com 400. Ids de wallet e player são UUIDs. Use UUIDs **minúsculos** (ver [Limitações](ARCHITECTURE.md#limitações-e-próximos-passos)). Erros saem como `application/problem+json` (RFC 9457) com `code`, `retryable` e `correlationId`. Toda resposta devolve o header `x-request-id`: é o que veio na requisição (se curto e seguro para log) ou um novo UUID v7.
+Todos os valores monetários trafegam como `{"amount": "<decimal com exatamente 2 casas>", "currency": "<ISO-4217>"}`. `"10"`, `"10.5"`, `"1e3"` e `"-1.00"` são rejeitados com 400. Ids de wallet e player são UUIDs, aceitos em qualquer caixa e normalizados para minúsculas na entrada (corpo, path e mensagens SQS). Erros saem como `application/problem+json` (RFC 9457) com `code`, `retryable` e `correlationId`. Toda resposta devolve o header `x-request-id`: é o que veio na requisição (se curto e seguro para log) ou um novo UUID v7.
 
 Os exemplos usam estas variáveis:
 
