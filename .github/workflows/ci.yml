@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUN_VERSION: 1.4.4
+
+jobs:
+  static:
+    name: Typecheck + unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run test:unit
+
+  integration:
+    name: Integration + concurrency
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run infra:test:up
+      - run: bun run test:integration
+      - run: bun run test:concurrency
+      - name: Infra logs on failure
+        if: failure()
+        run: docker compose -f compose.test.yml logs --no-color --tail 300
+      - name: Tear down
+        if: always()
+        run: bun run infra:test:down
+
+  e2e:
+    name: E2E (full compose stack)
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      # test:e2e brings the stack up (api, consumer x3, workers x2, migrate, postgres, localstack),
+      # runs the black-box suite and always runs `docker compose down -v` at the end.
+      - run: bun run test:e2e
+
+  auth:
+    name: Auth (real Keycloak)
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - run: bun install --frozen-lockfile
+      - run: bun run test:auth
+      - name: Keycloak logs on failure
+        if: failure()
+        run: docker compose --profile auth logs --no-color --tail 300 keycloak
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose --profile auth down -v
+          bun run infra:test:down

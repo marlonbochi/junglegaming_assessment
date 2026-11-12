@@ -1,0 +1,132 @@
+name: wagering
+
+x-app: &app
+  build: .
+  restart: unless-stopped
+  stop_grace_period: 30s
+  environment: &app-env
+    DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
+    AWS_ENDPOINT_URL: http://localstack:4566
+    AWS_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+    WAGER_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+    EVENTS_QUEUE_URL: http://localstack:4566/000000000000/wallet-events.fifo
+  depends_on: &app-deps
+    postgres:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+
+x-healthcheck: &app-healthcheck
+  test:
+    - CMD
+    - bun
+    - -e
+    - "fetch('http://localhost:'+process.env.PORT+'/health/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  interval: 3s
+  timeout: 5s
+  retries: 30
+  start_period: 5s
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    command: ["postgres", "-c", "max_connections=300"]
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wagering
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  localstack:
+    image: localstack/localstack:4.14.0
+    environment:
+      SERVICES: sqs
+    ports:
+      - "4567:4566"
+    volumes:
+      - ./infra/localstack/init/ready.d:/etc/localstack/init/ready.d
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal sqs list-queues | grep -q wallet-events.fifo"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  migrate:
+    build: .
+    command: ["bun", "src/main.migrate.ts", "up"]
+    restart: "no"
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/wagering
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["bun", "src/main.api.ts"]
+    environment:
+      <<: *app-env
+      PORT: "3000"
+      # Optional auth (spec §9): `AUTH_MODE=keycloak docker compose --profile auth up -d`.
+      AUTH_MODE: ${AUTH_MODE:-none}
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/wagering
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+    ports:
+      - "3000:3000"
+    healthcheck: *app-healthcheck
+
+  consumer:
+    <<: *app
+    command: ["bun", "src/main.consumer.ts"]
+    environment:
+      <<: *app-env
+      PORT: "3001"
+    healthcheck: *app-healthcheck
+
+  workers:
+    <<: *app
+    command: ["bun", "src/main.workers.ts"]
+    environment:
+      <<: *app-env
+      PORT: "3002"
+    healthcheck: *app-healthcheck
+
+  # Optional IdP (spec §9), only with `--profile auth`. Dev mode, in-memory, realm imported on start.
+  # Every credential here and in the realm export is TEST ONLY.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5
+    profiles: [auth]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Hostname v2 with a full URL: `iss` is http://localhost:8080/realms/wagering whether the token is
+      # requested from the host (localhost:8080) or from inside the network (keycloak:8080).
+      KC_HOSTNAME: http://localhost:8080
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./infra/keycloak/realm-wagering.json:/opt/keycloak/data/import/realm-wagering.json:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # The image has no curl: a raw HTTP request to the management port.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"status": "UP"' <&3
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 10s

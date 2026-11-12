@@ -1,0 +1,8 @@
+node_modules
+.git
+.superpowers
+test
+docs
+*.log
+.env
+coverage

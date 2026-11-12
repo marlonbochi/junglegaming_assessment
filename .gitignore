@@ -4,3 +4,4 @@ node_modules/
 coverage/
 test/load/results/
 .DS_Store
+.superpowers/

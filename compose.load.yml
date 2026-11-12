@@ -1,0 +1,40 @@
+# Load-test override (`bun run test:load`): fixed resource limits per service, so that results are
+# comparable between runs, plus the k6 runner on the compose network. Used together with compose.yml:
+#   docker compose -f compose.yml -f compose.load.yml ...
+# Limits apply per replica (`--scale consumer=3` gives three 1-CPU consumers).
+
+services:
+  postgres:
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 2g }
+
+  api:
+    deploy:
+      resources:
+        limits: { cpus: "2", memory: 1g }
+
+  consumer:
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512m }
+
+  workers:
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512m }
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [load]
+    volumes:
+      - ./test/load/k6:/scripts:ro
+      - ./test/load/results:/results
+    environment:
+      API_URL: http://api:3000
+      SQS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+      # k6-jslib-aws requires >= 16 characters; LocalStack maps any non-account-shaped key to 000000000000.
+      AWS_ACCESS_KEY_ID: testtesttesttest
+      AWS_SECRET_ACCESS_KEY: testtesttesttest
+      WAGER_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
