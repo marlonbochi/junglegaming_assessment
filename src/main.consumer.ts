@@ -8,6 +8,7 @@ import { HealthService } from './infrastructure/observability/health';
 import { createLogger } from './infrastructure/observability/logger';
 import type { PromMetrics } from './infrastructure/observability/metrics';
 import { createSqsClient } from './infrastructure/sqs/sqs-client';
+import { describeError } from './interfaces/describe-error';
 import { NestPinoLogger } from './interfaces/http/nest-logger';
 import { startOpsHttp } from './interfaces/ops-http';
 import { ConsumerModule } from './interfaces/sqs/consumer.module';
@@ -34,15 +35,21 @@ export async function bootstrapConsumer(env: Env, overrides: ConsumerOverrides =
 
 if (import.meta.main) {
   const env = loadEnv();
-  const app = await bootstrapConsumer(env);
+  const logger = createLogger(env);
+  const app = await bootstrapConsumer(env, { logger });
   const consumer = app.get(WagerTransactionConsumer);
   consumer.start();
   const ops = startOpsHttp(env.PORT, app.get(HealthService), app.get<PromMetrics>(METRICS));
   const shutdown = async () => {
-    await consumer.stop();
-    await ops.stop();
-    await app.close();
-    process.exit(0);
+    try {
+      await consumer.stop();
+      await ops.stop();
+      await app.close();
+      process.exit(0);
+    } catch (e) {
+      logger.error({ error: describeError(e) }, 'consumer shutdown failed');
+      process.exit(1);
+    }
   };
   process.once('SIGTERM', () => void shutdown());
   process.once('SIGINT', () => void shutdown());

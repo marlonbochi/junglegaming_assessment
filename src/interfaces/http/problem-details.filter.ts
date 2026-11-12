@@ -1,5 +1,6 @@
 import { Catch, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common';
 import type pino from 'pino';
+import { summarizeError } from '../../application/error-summary';
 import { PermanentInfraError, TransientInfraError } from '../../application/errors';
 import { requestContext } from '../../infrastructure/observability/request-context';
 import type { HttpResponse } from './http-types';
@@ -25,7 +26,8 @@ export class ProblemDetailsFilter implements ExceptionFilter {
     const err = describe(error);
     if (error instanceof TransientInfraError) this.logger.warn({ err }, 'transient infrastructure failure');
     else if (error instanceof FailedTransactionError) this.logger.warn({ err }, 'replayed transaction is FAILED');
-    else if (error instanceof PermanentInfraError) this.logger.error({ err, cause: describe(error.cause) }, 'permanent failure');
+    // The cause is often a driver error whose message embeds row values: name, SQLSTATE and constraint only.
+    else if (error instanceof PermanentInfraError) this.logger.error({ err, cause: summarizeError(error.cause) }, 'permanent failure');
     else this.logger.error({ err }, 'unhandled error');
   }
 }
