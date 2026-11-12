@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { ApplicationError, PermanentInfraError, TransientInfraError, UniqueViolationError } from '../../../src/application/errors';
+import { WagerTransactionStatus } from '../../../src/domain/wagering/wager-transaction.types';
 import { decide } from '../../../src/interfaces/sqs/consumer-decision';
 import { parseWagerMessage } from '../../../src/interfaces/sqs/wager-message.schema';
 
@@ -16,6 +17,20 @@ describe('decide', () => {
     '%s → dlq with reason',
     (code) => {
       expect(decide(fail(new ApplicationError(code)), 1, noJitter)).toEqual({ action: 'dlq', reason: code });
+    },
+  );
+
+  test('a replayed FAILED transaction → dlq INTERNAL_PROCESSING_ERROR (the first DLQ send may have failed)', () => {
+    expect(decide({ ok: true, status: WagerTransactionStatus.Failed }, 2, noJitter)).toEqual({
+      action: 'dlq',
+      reason: 'INTERNAL_PROCESSING_ERROR',
+    });
+  });
+
+  test.each([WagerTransactionStatus.Processed, WagerTransactionStatus.Rejected, WagerTransactionStatus.PendingReference])(
+    '%s result → ack',
+    (status) => {
+      expect(decide({ ok: true, status }, 1, noJitter)).toEqual({ action: 'ack' });
     },
   );
 

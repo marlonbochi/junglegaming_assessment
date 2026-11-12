@@ -104,7 +104,7 @@ export class WagerTransactionConsumer {
       result = await this.submit.execute(message.data, source, message.messageId);
       enrichRequestContext({ transactionId: result.transactionId });
       this.faults.hit('after_commit_before_ack');
-      outcome = { ok: true };
+      outcome = { ok: true, status: result.status };
     } catch (error) {
       outcome = { ok: false, error };
     }

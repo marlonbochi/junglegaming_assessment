@@ -304,6 +304,7 @@ Classificação (`decide`):
 | JSON inválido ou fora do schema | DLQ, `reason=INVALID_PAYLOAD`, depois delete | `{"hello":"world"}` |
 | `ApplicationError` | DLQ com `reason = code`, depois delete | `INVALID_PAYLOAD` (inclui `OPENING`), `WALLET_NOT_FOUND`, `IDEMPOTENCY_KEY_REUSED`, `EXTERNAL_ID_CONFLICT`, `INBOX_PAYLOAD_MISMATCH` |
 | `PermanentInfraError` (bug; `FAILED` gravado) | DLQ, `reason=INTERNAL_PROCESSING_ERROR`, depois delete | CHECK/trigger violado |
+| Replay de uma transação `FAILED` | DLQ, `reason=INTERNAL_PROCESSING_ERROR`, depois delete | reentrega de uma mensagem cujo envio à DLQ falhou (ou cujo processo caiu) depois de o `FAILED` ser gravado: o ack descartaria a mensagem das duas filas |
 | Qualquer outro (`TransientInfraError`, lock timeout, banco/SQS fora) | **sem ack**; `ChangeMessageVisibility` = `1 s · 2^(receiveCount−1)`, teto 60 s, + jitter | Postgres reiniciando |
 | 5 recepções sem sucesso | a redrive policy da fila (`maxReceiveCount=5`) move para a DLQ | falha transitória persistente |
 
@@ -495,7 +496,7 @@ Pontos em que o enunciado é ambíguo ou silencioso e a decisão tomada:
 15. O nudge acontece para qualquer transação que fica terminal (`PROCESSED` ou `REJECTED`), e só na wallet travada. Um dependente em outra wallet (que seria `REFERENCE_MISMATCH`) espera o backoff normal.
 16. A expiração da pendência só é avaliada se a referência continua ausente ou indecisa.
 17. Eventos emitidos pelo worker usam `correlationId = transactionId`, porque o id da requisição original não é armazenado.
-18. Replay de `FAILED` devolve o saldo atual e, por HTTP, 500 `retryable: false` com `transactionId`.
+18. Replay de `FAILED` devolve o saldo atual e, por HTTP, 500 `retryable: false` com `transactionId`. Por SQS, o replay de `FAILED` vai de novo para a DLQ (`INTERNAL_PROCESSING_ERROR`), em vez de ack: a entrega que gravou o `FAILED` pode ter morrido antes de mandar a mensagem à DLQ. Se aquele envio tinha chegado, a deduplicação da DLQ absorve a repetição dentro da janela de 5 min do SQS; depois dela, a DLQ fica com uma duplicata visível, nunca com uma mensagem perdida.
 19. `OpenWallet` com saldo inicial > 0 cria uma transação `OPENING` interna (`provider_id='internal'`, `idempotency_key='opening:<walletId>'`), para que o ledger nunca tenha lançamento sem transação. Ela conta como `source="internal"` nas métricas.
 20. **Chaves de idempotência são globais**, não por provedor (`UNIQUE (idempotency_key)`, como no README §5.3). Dois provedores que usem a mesma chave colidem: o segundo recebe 409 `IDEMPOTENCY_KEY_REUSED`, e com autenticação ligada esse 409 revela que a chave já foi usada por outro. Provedores devem usar UUIDs (ou prefixar a chave com o próprio `providerId`). A alternativa seria `UNIQUE (provider_id, idempotency_key)`.
 21. **`409 WALLET_ALREADY_EXISTS` não traz o `walletId`.** Um cliente que perdeu a resposta 201 não tem como descobrir o id da wallet criada: a resposta de conflito não o inclui e não há busca por jogador. Incluir o `walletId` no problem seria a correção.
