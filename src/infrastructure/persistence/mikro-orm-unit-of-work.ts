@@ -43,6 +43,11 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
           this.lockTimeout,
           this.statementTimeout,
         ]);
+        if (opts?.idleInTransactionTimeoutMs !== undefined) {
+          await em.execute(`SELECT set_config('idle_in_transaction_session_timeout', ?, true)`, [
+            `${opts.idleInTransactionTimeoutMs}ms`,
+          ]);
+        }
         return fn(repositoriesFor(em));
       }, opts?.isolation ? { isolationLevel: IsolationLevel.REPEATABLE_READ } : undefined);
     } catch (e) {

@@ -13,6 +13,7 @@ import type { Metrics } from '../../application/ports/metrics';
 import type { SubmitResult, SubmitWagerTransaction } from '../../application/use-cases/submit-wager-transaction';
 import { backoffDelayMs, type BackoffConfig } from '../../domain/messaging/backoff';
 import { enrichRequestContext, requestContext } from '../../infrastructure/observability/request-context';
+import { longPollRequestTimeoutMs } from '../../infrastructure/sqs/sqs-client';
 import { describeError } from '../describe-error';
 import { decide, type ConsumerDecision, type ProcessingOutcome } from './consumer-decision';
 import { parseWagerMessage, type WagerMessage } from './wager-message.schema';
@@ -122,7 +123,7 @@ export class WagerTransactionConsumer {
             MessageBody: m.Body ?? '',
             MessageAttributes: { reason: { DataType: 'String', StringValue: decision.reason } },
             MessageGroupId: m.Attributes?.MessageGroupId ?? walletId ?? 'unknown',
-            MessageDeduplicationId: `${messageId}:${decision.reason}`.slice(0, MAX_DEDUPLICATION_ID_LENGTH),
+            MessageDeduplicationId: dlqDeduplicationId(m.MessageId ?? messageId, decision.reason),
           }),
         );
         this.metrics.dlq(decision.reason);
@@ -162,7 +163,7 @@ export class WagerTransactionConsumer {
         VisibilityTimeout: this.config.visibilityTimeoutS,
         MessageSystemAttributeNames: ['ApproximateReceiveCount', 'MessageGroupId'],
       }),
-      { abortSignal: this.abort.signal },
+      { abortSignal: this.abort.signal, requestTimeout: longPollRequestTimeoutMs(WAIT_TIME_SECONDS) },
     );
     return Messages;
   }
@@ -263,6 +264,14 @@ export class WagerTransactionConsumer {
         return;
     }
   }
+}
+
+/**
+ * The SQS MessageId is unique per send and stable across redeliveries of that send, so two distinct
+ * poison messages never collapse (the envelope messageId can repeat). SQS allows only printable ASCII.
+ */
+function dlqDeduplicationId(sqsMessageId: string, reason: string): string {
+  return `${sqsMessageId}:${reason}`.replace(/[^\x21-\x7e]/g, '_').slice(0, MAX_DEDUPLICATION_ID_LENGTH);
 }
 
 function receiveCountOf(m: Message): number {

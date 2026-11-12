@@ -184,6 +184,31 @@ describe('MikroOrmUnitOfWork', () => {
     { timeout: 20_000 },
   );
 
+  test('idleInTransactionTimeoutMs ends a transaction left idle (e.g. stuck on a remote call) and releases its locks', async () => {
+    const { wallet } = await uow.run((r) => persistOpenedWallet(r, '10.00'));
+    const idleInTransaction = async () => {
+      const [row] = await db.sql`
+        SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'`;
+      return row.n as number;
+    };
+
+    const error = await uow
+      .run(
+        async (r) => {
+          await r.wallets.lockById(wallet.id);
+          // Idle while holding the lock, until the server ends the session.
+          await eventually(async () => expect(await idleInTransaction()).toBe(0), { timeoutMs: 5_000 });
+          await r.wallets.lockById(wallet.id);
+        },
+        { idleInTransactionTimeoutMs: 200 },
+      )
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Error);
+    // The lock is gone: another transaction takes it at once.
+    expect(await uow.run((r) => r.wallets.lockById(wallet.id))).toBeDefined();
+  });
+
   test('unique violation becomes UniqueViolationError and rolls back', async () => {
     const { wallet } = await uow.run((r) => persistOpenedWallet(r, '0.00'));
     const sameOwner = Wallet.rehydrate({ ...wallet.toState(), id: newId() });

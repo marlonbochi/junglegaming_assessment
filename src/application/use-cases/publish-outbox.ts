@@ -11,6 +11,12 @@ export interface PublishOutboxResult {
   retried: number;
 }
 
+/**
+ * Server-side bound on the batch transaction while it waits on SQS. Above the client's bounded call
+ * (3 attempts of at most 5s each, plus backoff), so only a call that is really stuck is cut short.
+ */
+export const OUTBOX_IDLE_IN_TRANSACTION_TIMEOUT_MS = 30_000;
+
 interface RetryScheduled {
   outboxMessageId: string;
   eventType: string;
@@ -21,8 +27,9 @@ interface RetryScheduled {
 /**
  * Spec §6.5, one batch: lock due messages (`SKIP LOCKED`, so concurrent publishers get disjoint
  * batches), publish, then mark each one published or schedule its retry — all in one SQL transaction.
- * The lock is held during the SQS call; if the process dies the lock is released and another publisher
- * sends the batch again, which the consumer deduplicates by `eventId`.
+ * The lock is held during the SQS call; if the process dies (or the transaction stays idle past
+ * `OUTBOX_IDLE_IN_TRANSACTION_TIMEOUT_MS`) the lock is released and another publisher sends the batch
+ * again, which the consumer deduplicates by `eventId`.
  */
 export class PublishOutbox {
   constructor(
@@ -44,7 +51,7 @@ export class PublishOutbox {
         locked = batch.length;
         const outcome = await this.publish(r, batch, now);
         return { ...outcome, lag: await r.outbox.lagSeconds(now), pending: await r.outbox.pendingCount() };
-      });
+      }, { idleInTransactionTimeoutMs: OUTBOX_IDLE_IN_TRANSACTION_TIMEOUT_MS });
       this.metrics.setOutboxLag(lag);
       this.metrics.setOutboxPending(pending);
       this.countRetries(retries.length);

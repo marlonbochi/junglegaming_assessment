@@ -15,6 +15,8 @@ export interface TxRepositories {
 export interface UnitOfWorkOptions {
   /** Defaults to the database default (read committed). */
   isolation?: 'repeatable read';
+  /** Server-side bound on time spent idle inside the transaction (e.g. waiting on a remote call). */
+  idleInTransactionTimeoutMs?: number;
 }
 
 export interface UnitOfWork {

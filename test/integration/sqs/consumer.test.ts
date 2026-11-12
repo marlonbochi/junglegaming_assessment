@@ -246,11 +246,29 @@ describe('dead-lettering', () => {
     expect(dead!.Body).toBe(sent.body);
     expect(dead!.MessageAttributes?.reason).toEqual({ DataType: 'String', StringValue: reason });
     expect(dead!.Attributes?.MessageGroupId).toBe(String(data.walletId));
-    // An unreadable envelope falls back to the SQS MessageId.
-    expect(dead!.Attributes?.MessageDeduplicationId).toBe(`${rawBody ? sent.sqsMessageId : sent.messageId}:${reason}`);
+    // The SQS MessageId: unique per send, stable across redeliveries of that send.
+    expect(dead!.Attributes?.MessageDeduplicationId).toBe(`${sent.sqsMessageId}:${reason}`);
     await expectQueueEmpty(q.queueUrl);
     expect(await metricsText(metrics)).toContain(`sqs_dlq_messages_total{reason="${reason}"} 1`);
     expect(await wagers(wallet.id)).toEqual([]);
+  });
+});
+
+describe('dead-lettering distinct messages', () => {
+  test('two different poison bodies sharing an envelope messageId (any characters) both reach the DLQ', async () => {
+    const q = await queues();
+    await startConsumer(q);
+    const wallet = await openWallet();
+    // Not an SQS-allowed deduplication id character set, and the same id on both.
+    const messageId = 'poison id ü #1';
+    const first = await sendWagerMessage(sqs, q.queueUrl, wagerData(wallet, { kind: 'OPENING' }), { messageId, deduplicationId: 'p-1' });
+    const second = await sendWagerMessage(sqs, q.queueUrl, wagerData(wallet, { kind: 'NOPE' }), { messageId, deduplicationId: 'p-2' });
+
+    // Deleted from the main queue only after the DLQ send: both are in the DLQ once it is empty.
+    await expectQueueEmpty(q.queueUrl);
+    const dead = await receiveAll(sqs, q.dlqUrl, { waitMs: 1000 });
+    expect(dead.map((m) => m.Body).sort()).toEqual([first.body, second.body].sort());
+    expect(dead.map((m) => m.MessageAttributes?.reason?.StringValue)).toEqual(['INVALID_PAYLOAD', 'INVALID_PAYLOAD']);
   });
 });
 

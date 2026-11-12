@@ -8,6 +8,7 @@ import {
   type Message,
   type SQSClient,
 } from '@aws-sdk/client-sqs';
+import { longPollRequestTimeoutMs } from '../../src/infrastructure/sqs/sqs-client';
 import { newId } from './persistence';
 
 export interface TestQueues {
@@ -89,15 +90,17 @@ export async function receiveAll(sqs: SQSClient, queueUrl: string, opts: { waitM
   const deadline = Date.now() + opts.waitMs;
   const received: Message[] = [];
   for (let remaining = opts.waitMs; remaining > 0; remaining = deadline - Date.now()) {
+    const waitTimeSeconds = Math.min(Math.floor(remaining / 1000), 20);
     const { Messages = [] } = await sqs.send(
       new ReceiveMessageCommand({
         QueueUrl: queueUrl,
         MaxNumberOfMessages: 10,
-        WaitTimeSeconds: Math.min(Math.floor(remaining / 1000), 20),
+        WaitTimeSeconds: waitTimeSeconds,
         VisibilityTimeout: 30,
         MessageAttributeNames: ['All'],
         MessageSystemAttributeNames: ['All'],
       }),
+      { requestTimeout: longPollRequestTimeoutMs(waitTimeSeconds) },
     );
     received.push(...Messages);
   }

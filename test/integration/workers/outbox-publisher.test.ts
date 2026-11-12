@@ -6,8 +6,9 @@ import type { EventPublisher } from '../../../src/application/ports/event-publis
 import type { FaultInjector } from '../../../src/application/ports/fault-injector';
 import { noopLogger, type AppLogger } from '../../../src/application/ports/logger';
 import { noopMetrics } from '../../../src/application/ports/metrics';
+import type { UnitOfWork, UnitOfWorkOptions } from '../../../src/application/ports/unit-of-work';
 import { OpenWallet } from '../../../src/application/use-cases/open-wallet';
-import { PublishOutbox } from '../../../src/application/use-cases/publish-outbox';
+import { OUTBOX_IDLE_IN_TRANSACTION_TIMEOUT_MS, PublishOutbox } from '../../../src/application/use-cases/publish-outbox';
 import { SubmitWagerTransaction } from '../../../src/application/use-cases/submit-wager-transaction';
 import { loadEnv } from '../../../src/infrastructure/config/env';
 import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/mikro-orm-unit-of-work';
@@ -65,7 +66,7 @@ afterAll(async () => {
 });
 
 function publishOutbox(
-  over: { unitOfWork?: MikroOrmUnitOfWork; publisher?: EventPublisher; faults?: FaultInjector; logger?: AppLogger } = {},
+  over: { unitOfWork?: UnitOfWork; publisher?: EventPublisher; faults?: FaultInjector; logger?: AppLogger } = {},
 ): PublishOutbox {
   return new PublishOutbox(
     over.unitOfWork ?? uow,
@@ -207,6 +208,23 @@ describe('PublishOutbox', () => {
     expect(await publishOutbox().execute(50)).toEqual({ published: 1, retried: 0 });
     expect(eventIdsOf(await receiveEvents(1))).toEqual(new Set([id!]));
     expect(await pendingRows()).toBe(0);
+  });
+
+  test('the batch transaction bounds its idle time, so a stuck SQS call cannot hold the rows forever', async () => {
+    await enqueue(1, 1);
+    const options: Array<UnitOfWorkOptions | undefined> = [];
+    const spying: UnitOfWork = {
+      run: (fn, opts) => {
+        options.push(opts);
+        return uow.run(fn, opts);
+      },
+    };
+
+    expect(await publishOutbox({ unitOfWork: spying }).execute(50)).toEqual({ published: 1, retried: 0 });
+    expect(options).toEqual([{ idleInTransactionTimeoutMs: OUTBOX_IDLE_IN_TRANSACTION_TIMEOUT_MS }]);
+    // Above the bounded SQS call (3 attempts of at most 5s each, plus backoff).
+    expect(OUTBOX_IDLE_IN_TRANSACTION_TIMEOUT_MS).toBeGreaterThan(3 * 5000);
+    await receiveEvents(1);
   });
 
   test('publisher throwing rolls the batch back: rows stay due and the retry is counted', async () => {
