@@ -66,7 +66,7 @@ interfaces  →  application  →  domain
 |---|---|---|
 | `src/domain` | `Money`, `Wallet` (aggregate root), `WalletLedgerEntry`, `WagerTransaction`, `settle` (serviço de domínio), eventos, `InboxMessage`, `OutboxMessage`, `backoff`, `FailureCode` | TypeScript puro. Não importa NestJS, MikroORM, AWS SDK, pino, prom-client nem zod (C#19). Construtores `private` e factories `create`/`open`/`from`/`rehydrate`; `rehydrate` não valida (C#20) |
 | `src/application` | Use cases, ports (`UnitOfWork`, repositórios, `Clock`, `IdGenerator`, `EventPublisher`, `Metrics`, `AppLogger`, `FaultInjector`, `ProviderIdentityPort`), hashing canônico, erros de aplicação | Orquestra a transação. Não conhece SQL, HTTP nem SQS |
-| `src/infrastructure` | Schemas `defineEntity`, mappers, repositórios, `MikroOrmUnitOfWork`, migration, cliente/publisher SQS, pino, prom-client, health, `loadEnv`, auth no-op, relógio e ids UUID v7 | Implementa as ports e traduz erros de driver em erros de aplicação |
+| `src/infrastructure` | Schemas `defineEntity`, mappers, repositórios, `MikroOrmUnitOfWork`, migration, cliente/publisher SQS, pino, prom-client, health, `loadEnv`, auth (no-op e guard JWT do Keycloak), relógio e ids UUID v7 | Implementa as ports e traduz erros de driver em erros de aplicação |
 | `src/interfaces` | Controllers HTTP + zod + filtro problem+json, consumer SQS e sua classificação, laços de polling dos workers, módulos Nest | Adaptadores de entrada; não contêm regra de negócio |
 
 Consequência prática: as regras de negócio (state machine, settlement, Money, backoff) são testadas sem IO em `test/unit`, e HTTP e SQS não têm como divergir, porque chamam o mesmo `execute`.
@@ -393,7 +393,9 @@ Camadas de erro:
 | `SERVICE_UNAVAILABLE` (banco ou SQS fora, `lock_timeout`, deadlock) | 503 + `Retry-After: 1` | problem | não | true |
 | `INTERNAL_ERROR` na primeira resposta de um erro inesperado | 500 | problem | talvez (`FAILED`) | true (o replay protege) |
 | `INTERNAL_ERROR` no replay de uma transação `FAILED` | 500 | problem + `transactionId` | sim | false (terminal, exige investigação; Ruling R19) |
-| `UNAUTHORIZED` / `FORBIDDEN` (preparado para a autenticação) | 401 / 403 | problem | não | false |
+| `UNAUTHENTICATED` (só com `AUTH_MODE=keycloak`: sem token, inválido, expirado, outra audiência) | 401 + `WWW-Authenticate: Bearer` | problem | não | false |
+| `PROVIDER_MISMATCH` (só com `AUTH_MODE=keycloak`: `providerId` do corpo ≠ client do token) | 403 | problem | não | false |
+| `FORBIDDEN` (outros 403 do Nest; nenhum caminho do código os gera hoje) | 403 | problem | não | false |
 
 A reconciliação sempre responde 200; divergência é `consistent: false`, nunca erro.
 
@@ -420,23 +422,26 @@ A reconciliação sempre responde 200; divergência é `consistent: false`, nunc
 
 ## Autenticação
 
-**Decisão:** autenticação de provedores **não está implementada**. No desafio ela vale 0 pontos e não podia competir com o núcleo financeiro. O código tem o ponto de extensão pronto para um IdP externo (C#31: nunca tabela própria de usuários e senhas).
+**Decisão:** autenticação **opcional**, desligada por padrão (`AUTH_MODE=none`). No desafio ela vale 0 pontos e não podia competir com o núcleo financeiro, então entrou por último e só como adaptador: nada no domínio nem nos use cases muda. O IdP é externo (Keycloak); o serviço não tem tabela de usuários nem senhas (C#31).
 
-**O que existe hoje** (`src/infrastructure/auth/*`, `src/application/ports/provider-identity.ts`):
+**Pontos de extensão** (`src/infrastructure/auth/*`, `src/application/ports/provider-identity.ts`):
 
-- `NoopAuthGuard`, registrado como `APP_GUARD` global em `src/interfaces/http/api.module.ts`. Pula os caminhos públicos (`isPublicPath`: `/health/*` e `/metrics`) e, nos demais, deixa passar com `request.principal = undefined`. Um guard real mantém exatamente essa forma: pular os caminhos públicos, autenticar e preencher `request.principal`.
-- `ProviderIdentityPort.assertMayActAs(providerId, principal)`, chamado pelo controller de submissão **antes** do use case. `NoopProviderIdentity` aceita qualquer provedor.
-- O filtro de problemas já mapeia 401 → `UNAUTHORIZED` e 403 → `FORBIDDEN`. `AUTH_MODE` (`none` | `keycloak`) já é validada por `loadEnv`, ainda sem efeito.
+- Um guard global (`APP_GUARD`) que pula os caminhos públicos (`isPublicPath`: `/health/*` e `/metrics`, C#31), autentica e preenche `request.principal`.
+- `ProviderIdentityPort.assertMayActAs(providerId, principal)`, chamado pelo controller de submissão **antes** do use case.
+- `ApiModule` escolhe o par por `AUTH_MODE`: `NoopAuthGuard` + `NoopProviderIdentity` (aceita tudo) com `none`; `KeycloakJwtGuard` + `JwtProviderIdentity` com `keycloak`. `loadEnv` falha na partida se `AUTH_MODE=keycloak` vier sem `KEYCLOAK_ISSUER` ou `KEYCLOAK_JWKS_URL`.
 
-**Desenho adotado para Keycloak** (próxima tarefa opcional):
+**Modo `keycloak`:**
 
-1. Keycloak no Compose com um realm importado (`infra/keycloak/realm.json`) e **um client `confidential` por provedor**, usando o grant *client credentials* (máquina a máquina, sem usuário final).
-2. `KeycloakJwtGuard` em `src/infrastructure/auth/`: lê `Authorization: Bearer`, valida a assinatura pelo **JWKS** do realm (chaves em cache, com rotação), `iss`, `aud` e `exp`, e preenche `request.principal = { providerId: azp }` (ou um claim mapeado no client). Sem token ou com token inválido → 401.
-3. `KeycloakProviderIdentity` implementa `ProviderIdentityPort`: `providerId` do payload ≠ `principal.providerId` → 403 `PROVIDER_MISMATCH`, um novo código no problem+json.
-4. `ApiModule` escolhe o guard e a identidade por `AUTH_MODE`. Os caminhos públicos continuam abertos.
-5. **SQS** continua sendo canal interno: a autorização é a do IAM na AWS real (quem pode `SendMessage`). O `providerId` da mensagem segue sujeito às validações de domínio (referências do mesmo provedor, `EXTERNAL_ID_CONFLICT` por provedor).
+1. Keycloak 26 no Compose, só com `--profile auth` (`start-dev --import-realm`, porta `8080`), com o realm `infra/keycloak/realm-wagering.json`: **um client `confidential` por provedor** (`provider-a`, `provider-b`), grant *client credentials* (máquina a máquina, sem usuário final), e um audience mapper que põe `wagering-api` no `aud` (tokens de client credentials não trazem essa audiência por padrão). O client `other-service` não tem o mapper e existe para testar a recusa por audiência. Secrets e admin são só de teste.
+2. `KeycloakJwtGuard` (jose): lê `Authorization: Bearer`, valida a assinatura pelo **JWKS** do realm (`createRemoteJWKSet`: chaves em cache, refetch quando aparece um `kid` desconhecido, ou seja, rotação), só `RS256`, `iss = KEYCLOAK_ISSUER`, `aud ∋ wagering-api` e `exp`, e preenche `request.principal = { providerId: azp, subject: sub }`. Sem token, token inválido, expirado, de outra audiência ou sem `azp` → 401 `UNAUTHENTICATED` com `WWW-Authenticate: Bearer`. JWKS inacessível → 503 `SERVICE_UNAVAILABLE` retentável: a falha é do IdP, e um 401 levaria o cliente a achar que a credencial está errada.
+3. `JwtProviderIdentity`: `providerId` do corpo ≠ `principal.providerId` → 403 `PROVIDER_MISMATCH`, antes de qualquer gravação. Os dois códigos são de HTTP (`problem-details.ts`), não `FailureCode` do domínio.
+4. **Issuer estável:** o Keycloak usa hostname v2 com `KC_HOSTNAME=http://localhost:8080`, então o `iss` é `http://localhost:8080/realms/wagering` tanto para um token pedido do host quanto de dentro da rede do Compose. A `api` em container busca as chaves no endereço interno (`KEYCLOAK_JWKS_URL=http://keycloak:8080/...`); o `iss` não depende de quem pediu o token.
 
-Nada no domínio nem nos use cases muda: a troca acontece só em `src/infrastructure/auth` e na composição do `ApiModule`.
+**O que fica de fora** (limitações aceitas):
+
+- **Consultas sem checagem de provedor:** os `GET` (wallet, ledger, transação por id ou por provedor + id externo) e `POST /wallets`/reconciliação exigem um token válido, mas qualquer provedor autenticado lê dados de qualquer outro. Escopo por provedor nas consultas exigiria saber o dono de cada wallet, que o modelo não tem.
+- **SQS** não passa pelo guard: é canal interno, e a autorização é a do IAM na AWS real (quem pode `SendMessage` em `wager-transactions.fifo`). O `providerId` da mensagem segue sujeito às validações de domínio (referências do mesmo provedor, `EXTERNAL_ID_CONFLICT` por provedor).
+- Sem roles nem scopes: ser um client do realm com a audiência `wagering-api` é a autorização inteira. Sem revogação antes do `exp` (validação local, sem introspecção); o token dura 5 min.
 
 ## Testes
 
@@ -444,8 +449,8 @@ TDD em todo o código de produção (C#23). Postgres e LocalStack **reais** em t
 
 | Camada | Onde | O que prova |
 |---|---|---|
-| Unidade (230) | `test/unit` | `Money` (formatos aceitos e recusados, aritmética, moeda), `Wallet`, `WalletLedgerEntry`, máquina de estados da `WagerTransaction`, cada regra e `failureCode` de `settle`, eventos, inbox/outbox, backoff, canonical JSON e hash, cursor do ledger, `decide` do consumer, mapeamento problem+json, `loadEnv`, logger (redaction), `MoneyAmountType`, classificação de erros do Postgres |
-| Integração (178) | `test/integration` | `schema/`: migrations `up → down → up` e cada constraint/trigger por SQL direto. `persistence/`: repositórios, `SKIP LOCKED`, UoW (timeouts, isolamento, tradução de erros). `use-cases/`: open wallet, submit (todas as regras e conflitos), atomicidade com `FaultInjector` em cada ponto, consultas e reconciliação. `http/`: API completa via HTTP real. `sqs/`: consumer com inbox, redelivery, retry, DLQ com redrive real, shutdown. `workers/`: outbox publisher e worker de pendências |
+| Unidade (257) | `test/unit` | `Money` (formatos aceitos e recusados, aritmética, moeda), `Wallet`, `WalletLedgerEntry`, máquina de estados da `WagerTransaction`, cada regra e `failureCode` de `settle`, eventos, inbox/outbox, backoff, canonical JSON e hash, cursor do ledger, `decide` do consumer, mapeamento problem+json, `loadEnv`, logger (redaction), `MoneyAmountType`, classificação de erros do Postgres, `KeycloakJwtGuard` (JWKS local do jose: assinatura, `iss`, `aud`, `exp`, `azp`, JWKS fora → 503) e `JwtProviderIdentity` |
+| Integração (180 + 6 com `AUTH_E2E=1`) | `test/integration` | `schema/`: migrations `up → down → up` e cada constraint/trigger por SQL direto. `persistence/`: repositórios, `SKIP LOCKED`, UoW (timeouts, isolamento, tradução de erros). `use-cases/`: open wallet, submit (todas as regras e conflitos), atomicidade com `FaultInjector` em cada ponto, consultas e reconciliação. `http/`: API completa via HTTP real. `sqs/`: consumer com inbox, redelivery, retry, DLQ com redrive real, shutdown. `workers/`: outbox publisher e worker de pendências. `http/auth.test.ts` (só com `AUTH_E2E=1`, via `bun run test:auth`): API com `AUTH_MODE=keycloak` contra o Keycloak real do Compose (401, 403 `PROVIDER_MISMATCH`, 200, health/metrics abertos) |
 | Concorrência (9) | `test/concurrency` | Os 8 cenários obrigatórios com paralelismo real: processos `api`/`consumer`/`workers` separados (`Bun.spawn` dos entrypoints reais) e conexões distintas |
 | E2E (17) | `test/e2e` + `test/integration/runtime` | Stack do `compose.yml` com a imagem real, `consumer=3`, `workers=2`, interação só por HTTP e SQS: jornada HTTP com paginação e reconciliação, idempotência (replay, 409, 400, HTTP+SQS), jornada SQS lendo envelopes de `wallet-events.fifo`, fora de ordem, DLQ com motivo, rajada com 3 consumers, readiness 503 com Postgres parado e recuperação |
 
@@ -494,7 +499,7 @@ Fora de escopo por decisão:
 
 - Escala fixa de 2 casas para todas as moedas; sem reversão parcial; ledger de partida simples, não de partidas dobradas; nenhum consumidor de `wallet-events.fifo` no repositório; sem OpenTelemetry nem dashboards.
 - LocalStack não reproduz latência, throttling nem limites reais da AWS.
-- Pendente no plano: **Keycloak** (desenho na seção [Autenticação](#autenticação)). Os limites de capacidade medidos e o que mudaria para escalar estão em [`docs/load-test-report.md`](docs/load-test-report.md).
+- Autenticação opcional e sem escopo por provedor nas consultas (ver [Autenticação](#autenticação)). Os limites de capacidade medidos e o que mudaria para escalar estão em [`docs/load-test-report.md`](docs/load-test-report.md).
 
 Limitações conhecidas no código, em ordem aproximada de impacto:
 
@@ -510,7 +515,7 @@ Limitações conhecidas no código, em ordem aproximada de impacto:
 - **Domínio:** `settle` muta a wallet em memória antes de `markProcessed` verificar o status (só um chamador com bug chegaria aí, e a transação aborta). `canonicalJson` serializaria `Date`/instâncias de classe como `{}` (inalcançável pelos contratos, que são JSON puro).
 - **Logs:** a redaction vai só um nível abaixo do topo; a mensagem de causa de um `PermanentInfraError` é logada sem filtro; scrapes de health/metrics geram log `info`.
 - **Validação:** `Idempotency-Key` só com espaços é aceito; um `x-request-id` longo ou com caracteres fora de `[\w.:-]` é trocado silenciosamente por um UUID novo; cursores base64 não canônicos são aceitos.
-- **Configuração sem efeito:** `SQS_MAX_RECEIVE` (o limite real é a redrive policy criada em `infra/localstack/init/ready.d/01-queues.sh`) e `AUTH_MODE`.
+- **Configuração sem efeito:** `SQS_MAX_RECEIVE` (o limite real é a redrive policy criada em `infra/localstack/init/ready.d/01-queues.sh`).
 - **Crescimento:** `inbox_messages` e as linhas publicadas de `outbox_messages` não têm limpeza; a reconciliação soma o ledger inteiro da wallet (O(n), sem snapshots). Em produção seriam necessários um job de retenção e checkpoints de saldo.
 - **Throughput por wallet** é o de uma fila serial (lock pessimista, por desenho). Wallets diferentes escalam com instâncias e com o pool de conexões (`DB_POOL_MAX` × processos ≤ `max_connections=300` no Compose).
 - **Testes:** os cenários 4 e 8 usam saldos altos, então a checagem de "nunca negativo" neles não tem como falhar (o cenário 2 e o `CHECK` cobrem a regra). O limiar de tempo do cenário 3 foi relaxado para 0,75 (Ruling R24); a prova real é o teste determinístico com `pg_locks`.

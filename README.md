@@ -30,6 +30,7 @@ O `--wait` só retorna quando todos os containers estão `healthy`. Com as image
 | `api` | API HTTP (`src/main.api.ts`) | `3000` |
 | `consumer` | Consome `wager-transactions.fifo` (`src/main.consumer.ts`); expõe health/metrics na porta interna `3001` | — |
 | `workers` | Outbox publisher + worker de `PENDING_REFERENCE` (`src/main.workers.ts`); health/metrics na porta interna `3002` | — |
+| `keycloak` | Opcional, só com `--profile auth`: IdP para a [autenticação](#autenticação-opcional-keycloak) | `8080` |
 
 Comandos úteis:
 
@@ -163,7 +164,36 @@ curl -s $API/wagering/transactions/$TX_ID
 | `GET /health/ready` | 200 com `SELECT 1` no Postgres e `GetQueueAttributes` na fila de apostas (timeout de 2 s cada); senão 503 com `checks.database` / `checks.queue` = `down` |
 | `GET /metrics` | Prometheus (`wagering_transactions_total`, `wagering_duplicates_total`, `db_lock_conflicts_total`, `outbox_lag_seconds`, …) |
 
-Os três ficam fora de autenticação. `consumer` e `workers` expõem os mesmos três num servidor HTTP mínimo, nas portas internas 3001 e 3002. As métricas são por processo: cada réplica tem as suas.
+Os três ficam fora de autenticação, também com `AUTH_MODE=keycloak`. `consumer` e `workers` expõem os mesmos três num servidor HTTP mínimo, nas portas internas 3001 e 3002. As métricas são por processo: cada réplica tem as suas.
+
+## Autenticação (opcional, Keycloak)
+
+Por padrão (`AUTH_MODE=none`) a API não exige token e qualquer chamador pode agir como qualquer provedor. Com `AUTH_MODE=keycloak`, todo endpoint HTTP exceto `/health/*` e `/metrics` exige `Authorization: Bearer <JWT>` emitido pelo realm `wagering` de um Keycloak externo. Não existe tabela de usuários nem senhas no serviço (C#31): cada provedor é um client `confidential` do Keycloak que obtém token por *client credentials*.
+
+```bash
+AUTH_MODE=keycloak docker compose --profile auth up -d --build --scale consumer=3 --scale workers=2 --wait
+
+# Token do provider-a (o secret é só de teste: está em infra/keycloak/realm-wagering.json)
+TOKEN=$(curl -s http://localhost:8080/realms/wagering/protocol/openid-connect/token \
+  -d grant_type=client_credentials -d client_id=provider-a -d client_secret=provider-a-test-secret | jq -r .access_token)
+
+curl -s -X POST $API/wallets -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"playerId\":\"$PLAYER_ID\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}"
+# Sem token → 401 UNAUTHENTICATED (com WWW-Authenticate: Bearer)
+# Token do provider-a com "providerId":"provider-b" no corpo do POST /wagering/transactions → 403 PROVIDER_MISMATCH
+```
+
+Com a autenticação ligada, os demais exemplos deste README precisam de `-H "Authorization: Bearer $TOKEN"` (e de `providerId` igual ao client do token). O token dura 5 min.
+
+| Situação | Resposta |
+|---|---|
+| Sem header, esquema diferente de `Bearer`, token malformado, assinatura inválida, `iss` diferente de `KEYCLOAK_ISSUER`, `aud` sem `wagering-api`, expirado ou sem `azp` | 401 `UNAUTHENTICATED`, `retryable: false` |
+| `POST /wagering/transactions` com `providerId` diferente do client do token (`azp`) | 403 `PROVIDER_MISMATCH`, nada é gravado |
+| JWKS do Keycloak inacessível | 503 `SERVICE_UNAVAILABLE`, `retryable: true` (a falha é do IdP, não da credencial) |
+
+O realm importado (`infra/keycloak/realm-wagering.json`) tem os clients `provider-a` e `provider-b`, com um mapper que põe `wagering-api` no `aud`, e `other-service`, sem esse mapper (serve para testar o 401 por audiência). Todos os secrets do realm e o admin `admin`/`admin` do Keycloak são **só de teste**. O `iss` dos tokens é sempre `http://localhost:8080/realms/wagering` (hostname v2 do Keycloak fixado em `KC_HOSTNAME`), seja o token pedido do host ou de dentro da rede do Compose; a `api` busca as chaves em `http://keycloak:8080/...` (`KEYCLOAK_JWKS_URL`).
+
+O que **não** é protegido por provedor: as consultas (`GET`) exigem um token válido, mas qualquer provedor autenticado lê wallets e transações de qualquer outro; `POST /wallets` também aceita qualquer token válido. A fila SQS não passa pelo guard: a confiança nela é de IAM (quem pode publicar em `wager-transactions.fifo`), e o `providerId` da mensagem só passa pelas validações de domínio. Detalhes em [`ARCHITECTURE.md`](ARCHITECTURE.md#autenticação).
 
 ## SQS
 
@@ -227,12 +257,13 @@ Do host, a mesma fila fica em `http://localhost:4567/000000000000/wager-transact
 | Script | O que sobe | O que roda | Duração aproximada* |
 |---|---|---|---|
 | `bun run typecheck` | nada | `tsc --noEmit` (`strict`). O Bun não faz type-check | ~2 s |
-| `bun run test:unit` | nada | `test/unit`: domínio, hashing, backoff, classificação do consumer, mapeamento de erros, env, sem IO | <1 s (230 testes) |
-| `bun run test:integration` | `compose.test.yml` (projeto `wagering-test`: Postgres em `55432`, LocalStack em `4566`) | `test/integration`, com Postgres e LocalStack reais. Cada arquivo clona um banco migrado (`CREATE DATABASE … TEMPLATE`) e cria filas próprias | ~25 s (178 testes; 2 skips: o smoke do Compose só roda no E2E) |
+| `bun run test:unit` | nada | `test/unit`: domínio, hashing, backoff, classificação do consumer, mapeamento de erros, env, guard JWT (com JWKS local), sem IO | <1 s (257 testes) |
+| `bun run test:integration` | `compose.test.yml` (projeto `wagering-test`: Postgres em `55432`, LocalStack em `4566`) | `test/integration`, com Postgres e LocalStack reais. Cada arquivo clona um banco migrado (`CREATE DATABASE … TEMPLATE`) e cria filas próprias | ~25 s (180 testes; 10 skips: o smoke do Compose só roda no E2E e o teste de Keycloak só com `AUTH_E2E=1`) |
 | `bun run test:concurrency` | `compose.test.yml` | `test/concurrency`: os 8 cenários obrigatórios com processos reais (`Bun.spawn` de `api`/`consumer`/`workers`) | ~20 s (9 testes) |
 | `bun run test:e2e` | `compose.yml` inteiro com `--build --scale consumer=3 --scale workers=2 --wait`; ao final, `docker compose down -v` | `test/e2e` + `test/integration/runtime` (`E2E_COMPOSE=1`), interagindo só por HTTP e SQS | ~45 s com imagens em cache (17 testes) |
+| `bun run test:auth` | `keycloak` (`docker compose --profile auth up -d --wait keycloak`) e `compose.test.yml`; ao final, remove só o container do Keycloak | `test/integration/http/auth.test.ts` com `AUTH_E2E=1`: API em processo com `AUTH_MODE=keycloak` contra o Keycloak real (sem token → 401, token sem audiência ou lixo → 401, provedor errado → 403, provedor certo → 200, health/metrics sem token) | ~20 s (6 testes) |
 | `bun run test:load` | Para cada cenário, uma stack nova de `compose.yml` + `compose.load.yml` (limites fixos de CPU/memória) e, ao final, `docker compose down -v` | k6 (`grafana/k6:2.3.0`, em container na rede do Compose) com os cenários `distributed`, `hot-wallet`, `duplicates` e `sqs-drain` (`--scenario soak` roda o soak de 10 min). Coleta `/metrics`, `pg_stat_activity` e `docker stats`; reconcilia todas as wallets e falha se alguma estiver inconsistente. Resultados em `test/load/results/<timestamp>/` (fora do git); análise em [`docs/load-test-report.md`](docs/load-test-report.md) | ~22 min (soak: ~12 min) |
-| `bun run test` | tudo acima, exceto `test:load` | `typecheck → test:unit → test:integration → test:concurrency → test:e2e` | ~1,5 min |
+| `bun run test` | tudo acima, exceto `test:auth` e `test:load` (roda com `AUTH_MODE=none`) | `typecheck → test:unit → test:integration → test:concurrency → test:e2e` | ~1,5 min |
 | `bun run infra:test:up` / `infra:test:down` | sobe / derruba (`-v`) só o `compose.test.yml` | — | — |
 | `bun run db:migrate` / `db:migrate:down` | nada | aplica / reverte as migrations em `DATABASE_URL` | — |
 
@@ -291,7 +322,9 @@ Validadas por `loadEnv` (`src/infrastructure/config/env.ts`, zod). Um valor inv�
 | `FAULT` | — | Só para testes: `<ponto>:<crash\|throw>`, com ponto em `after_ledger_append`, `before_commit`, `after_commit_before_ack`, `after_publish_before_mark` |
 | `JITTER` | `on` | `off` desliga o jitter dos backoffs (testes determinísticos) |
 | `LOG_LEVEL` | `info` | Nível do pino (`fatal` … `trace`, `silent`) |
-| `AUTH_MODE` | `none` | Reservada para o modo Keycloak. Validada, mas sem efeito hoje (ver [Autenticação](ARCHITECTURE.md#autenticação)) |
+| `AUTH_MODE` | `none` | `none`: sem autenticação. `keycloak`: JWT obrigatório na API exceto health/metrics (ver [Autenticação](#autenticação-opcional-keycloak)) |
+| `KEYCLOAK_ISSUER` | — | Obrigatória com `AUTH_MODE=keycloak`: `iss` esperado (`http://localhost:8080/realms/wagering` no Compose) |
+| `KEYCLOAK_JWKS_URL` | — | Obrigatória com `AUTH_MODE=keycloak`: URL do JWKS do realm (`http://keycloak:8080/realms/wagering/protocol/openid-connect/certs` dentro do Compose) |
 
 `lock_timeout` (5 s) e `statement_timeout` (15 s) por transação são constantes de `MikroOrmUnitOfWork`, não variáveis de ambiente.
 
@@ -304,12 +337,13 @@ src/
   application/       use cases (SubmitWagerTransaction, OpenWallet, RetryPendingReferences, PublishOutbox,
                      ReconcileWallet, consultas), ports, hashing canônico, erros de aplicação
   infrastructure/    MikroORM (schemas defineEntity, mappers, repositórios, UnitOfWork, migration),
-                     SQS (client, publisher), observabilidade (pino, prom-client, health), auth (no-op), config
+                     SQS (client, publisher), observabilidade (pino, prom-client, health), auth (no-op e JWT Keycloak), config
   interfaces/        http (controllers, zod, problem+json), sqs (consumer), workers (laços de polling)
   main.api.ts  main.consumer.ts  main.workers.ts  main.migrate.ts
 test/
   unit/  integration/  concurrency/  e2e/  load/  support/
 infra/localstack/init/ready.d/01-queues.sh     criação das filas
+infra/keycloak/realm-wagering.json             realm do Keycloak opcional (secrets só de teste)
 compose.yml  compose.test.yml  compose.load.yml  Dockerfile  mikro-orm.config.ts
 ```
 

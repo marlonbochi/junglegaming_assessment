@@ -9,8 +9,11 @@ import { GetWallet } from '../../application/use-cases/get-wallet';
 import { ListLedger } from '../../application/use-cases/list-ledger';
 import { OpenWallet } from '../../application/use-cases/open-wallet';
 import { ReconcileWallet } from '../../application/use-cases/reconcile-wallet';
+import { JwtProviderIdentity } from '../../infrastructure/auth/jwt-provider-identity';
+import { KeycloakJwtGuard } from '../../infrastructure/auth/keycloak-jwt.guard';
 import { NoopAuthGuard } from '../../infrastructure/auth/noop-auth.guard';
 import { NoopProviderIdentity } from '../../infrastructure/auth/noop-provider-identity';
+import type { Env } from '../../infrastructure/config/env';
 import { toAppLogger } from '../../infrastructure/observability/logger';
 import { CoreModule, type CoreModuleDeps } from '../core.module';
 import { CLOCK, IDS, METRICS, PROVIDER_IDENTITY, UNIT_OF_WORK } from '../tokens';
@@ -20,6 +23,22 @@ import { WalletsController } from './controllers/wallets.controller';
 
 export interface ApiModuleDeps extends CoreModuleDeps {
   logger: pino.Logger;
+}
+
+/** Spec §9: the global guard and the provider identity are chosen together by AUTH_MODE. */
+function authProviders(env: Env): Provider[] {
+  if (env.AUTH_MODE === 'keycloak') {
+    // loadEnv fails fast when AUTH_MODE=keycloak lacks either variable.
+    const guard = KeycloakJwtGuard.remote(env.KEYCLOAK_ISSUER!, env.KEYCLOAK_JWKS_URL!);
+    return [
+      { provide: PROVIDER_IDENTITY, useValue: new JwtProviderIdentity() },
+      { provide: APP_GUARD, useValue: guard },
+    ];
+  }
+  return [
+    { provide: PROVIDER_IDENTITY, useValue: new NoopProviderIdentity() },
+    { provide: APP_GUARD, useClass: NoopAuthGuard },
+  ];
 }
 
 /** Plain factory providers on top of the shared CoreModule (which owns the ORM and SQS client). */
@@ -36,7 +55,7 @@ export class ApiModule {
       imports: [CoreModule.forRoot(deps)],
       controllers: [WalletsController, WagerTransactionsController, OpsController],
       providers: [
-        { provide: PROVIDER_IDENTITY, useFactory: () => new NoopProviderIdentity() },
+        ...authProviders(deps.env),
         useCase(OpenWallet, [UNIT_OF_WORK, CLOCK, IDS, METRICS], (uow: UnitOfWork, clock: Clock, ids: IdGenerator, metrics: Metrics) =>
           new OpenWallet(uow, clock, ids, metrics),
         ),
@@ -46,7 +65,6 @@ export class ApiModule {
         useCase(ReconcileWallet, [UNIT_OF_WORK, METRICS], (uow: UnitOfWork, metrics: Metrics) =>
           new ReconcileWallet(uow, metrics, toAppLogger(deps.logger)),
         ),
-        { provide: APP_GUARD, useClass: NoopAuthGuard },
       ],
     };
   }

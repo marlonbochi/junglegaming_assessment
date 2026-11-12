@@ -1,7 +1,15 @@
 import { HttpException } from '@nestjs/common';
-import { ApplicationError, PermanentInfraError, TransientInfraError, type AppErrorCode } from '../../application/errors';
+import {
+  ApplicationError,
+  ForbiddenProviderError,
+  PermanentInfraError,
+  TransientInfraError,
+  UnauthenticatedError,
+  type AppErrorCode,
+} from '../../application/errors';
 
-export type ProblemCode = AppErrorCode | 'SERVICE_UNAVAILABLE' | 'INTERNAL_ERROR' | 'UNAUTHORIZED' | 'FORBIDDEN';
+/** Auth codes are HTTP-only (spec §7/§9): they never reach the domain's FailureCode. */
+export type ProblemCode = AppErrorCode | 'SERVICE_UNAVAILABLE' | 'INTERNAL_ERROR' | 'UNAUTHENTICATED' | 'PROVIDER_MISMATCH' | 'FORBIDDEN';
 
 export interface ProblemBody {
   type: string;
@@ -54,7 +62,8 @@ const TITLES: Record<ProblemCode, string> = {
   NOT_FOUND: 'Resource not found',
   SERVICE_UNAVAILABLE: 'Service temporarily unavailable',
   INTERNAL_ERROR: 'Internal error',
-  UNAUTHORIZED: 'Unauthorized',
+  UNAUTHENTICATED: 'Missing, invalid or expired bearer token',
+  PROVIDER_MISMATCH: 'Caller may not act as this provider',
   FORBIDDEN: 'Forbidden',
 };
 
@@ -83,6 +92,10 @@ export function toProblem(error: unknown, correlationId: string): Problem {
   if (error instanceof ApplicationError) {
     return problem(APPLICATION_STATUS[error.code], error.code, false, error.message !== error.code ? { detail: error.message } : {});
   }
+  if (error instanceof UnauthenticatedError) {
+    return problem(401, 'UNAUTHENTICATED', false, { detail: error.message }, { 'WWW-Authenticate': 'Bearer' });
+  }
+  if (error instanceof ForbiddenProviderError) return problem(403, 'PROVIDER_MISMATCH', false, { detail: error.message });
   if (error instanceof FailedTransactionError) return problem(500, 'INTERNAL_ERROR', false, { transactionId: error.transactionId });
   if (error instanceof TransientInfraError) return problem(503, 'SERVICE_UNAVAILABLE', true, {}, { 'Retry-After': '1' });
   if (error instanceof PermanentInfraError) return problem(500, 'INTERNAL_ERROR', true);
@@ -94,7 +107,7 @@ export function toProblem(error: unknown, correlationId: string): Problem {
 function fromHttpException(error: HttpException, problem: (status: number, code: ProblemCode, retryable: boolean) => Problem): Problem {
   const status = error.getStatus();
   if (status === 404) return problem(404, 'NOT_FOUND', false);
-  if (status === 401) return problem(401, 'UNAUTHORIZED', false);
+  if (status === 401) return problem(401, 'UNAUTHENTICATED', false);
   if (status === 403) return problem(403, 'FORBIDDEN', false);
   if (status >= 400 && status < 500) return problem(status, 'INVALID_PAYLOAD', false);
   return problem(500, 'INTERNAL_ERROR', true);

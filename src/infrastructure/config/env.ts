@@ -34,7 +34,17 @@ const envSchema = z.object({
   JITTER: z.enum(['on', 'off']).default('on'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   AUTH_MODE: z.enum(['none', 'keycloak']).default('none'),
-});
+  /** Expected `iss` of the tokens (must match what Keycloak puts in them, whoever fetched the token). */
+  KEYCLOAK_ISSUER: z.url().optional(),
+  /** Where the API fetches the realm's signing keys; may be an internal address. */
+  KEYCLOAK_JWKS_URL: z.url().optional(),
+})
+  .superRefine((env, ctx) => {
+    if (env.AUTH_MODE !== 'keycloak') return;
+    for (const key of ['KEYCLOAK_ISSUER', 'KEYCLOAK_JWKS_URL'] as const) {
+      if (env[key] === undefined) ctx.addIssue({ code: 'custom', path: [key], message: 'required when AUTH_MODE=keycloak' });
+    }
+  });
 
 export type Env = z.infer<typeof envSchema>;
 

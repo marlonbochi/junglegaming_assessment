@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { BadRequestException, NotFoundException, PayloadTooLargeException } from '@nestjs/common';
-import { ApplicationError, PermanentInfraError, TransientInfraError, type AppErrorCode } from '../../../src/application/errors';
+import { BadRequestException, ForbiddenException, NotFoundException, PayloadTooLargeException, UnauthorizedException } from '@nestjs/common';
+import {
+  ApplicationError,
+  ForbiddenProviderError,
+  PermanentInfraError,
+  TransientInfraError,
+  UnauthenticatedError,
+  type AppErrorCode,
+} from '../../../src/application/errors';
 import { FailedTransactionError, toProblem } from '../../../src/interfaces/http/problem-details';
 
 const corr = 'corr-1';
@@ -69,5 +76,27 @@ describe('toProblem', () => {
       body: { code: 'INVALID_PAYLOAD', retryable: false },
     });
     expect(toProblem(new PayloadTooLargeException(), corr)).toMatchObject({ status: 413, body: { code: 'INVALID_PAYLOAD' } });
+  });
+
+  test('UnauthenticatedError → 401 UNAUTHENTICATED with WWW-Authenticate: Bearer and a generic detail', () => {
+    const p = toProblem(new UnauthenticatedError('Invalid or expired token'), corr);
+    expect(p).toMatchObject({ status: 401, headers: { 'WWW-Authenticate': 'Bearer' } });
+    expect(p.body).toMatchObject({
+      type: 'https://errors.wagering.local/unauthenticated',
+      code: 'UNAUTHENTICATED',
+      retryable: false,
+      detail: 'Invalid or expired token',
+    });
+  });
+
+  test('ForbiddenProviderError → 403 PROVIDER_MISMATCH, not retryable', () => {
+    const p = toProblem(new ForbiddenProviderError('provider-b'), corr);
+    expect(p.status).toBe(403);
+    expect(p.body).toMatchObject({ type: 'https://errors.wagering.local/provider-mismatch', code: 'PROVIDER_MISMATCH', retryable: false });
+  });
+
+  test('Nest 401/403 exceptions → UNAUTHENTICATED / FORBIDDEN', () => {
+    expect(toProblem(new UnauthorizedException(), corr)).toMatchObject({ status: 401, body: { code: 'UNAUTHENTICATED' } });
+    expect(toProblem(new ForbiddenException(), corr)).toMatchObject({ status: 403, body: { code: 'FORBIDDEN' } });
   });
 });

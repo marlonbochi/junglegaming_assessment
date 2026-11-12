@@ -44,4 +44,18 @@ describe('loadEnv', () => {
     expect(() => loadEnv({ DATABASE_URL, AUTH_MODE: 'basic' })).toThrow(/AUTH_MODE/);
     expect(() => loadEnv({ DATABASE_URL, FAULT: 'nowhere:crash' })).toThrow(/FAULT/);
   });
+
+  test('AUTH_MODE=keycloak requires KEYCLOAK_ISSUER and KEYCLOAK_JWKS_URL (fail fast)', () => {
+    const issuer = 'http://localhost:8080/realms/wagering';
+    const jwks = 'http://keycloak:8080/realms/wagering/protocol/openid-connect/certs';
+    expect(() => loadEnv({ DATABASE_URL, AUTH_MODE: 'keycloak' })).toThrow(/KEYCLOAK_ISSUER[\s\S]*KEYCLOAK_JWKS_URL/);
+    expect(() => loadEnv({ DATABASE_URL, AUTH_MODE: 'keycloak', KEYCLOAK_ISSUER: issuer })).toThrow(/KEYCLOAK_JWKS_URL/);
+    expect(() => loadEnv({ DATABASE_URL, AUTH_MODE: 'keycloak', KEYCLOAK_ISSUER: 'nope', KEYCLOAK_JWKS_URL: jwks })).toThrow(/KEYCLOAK_ISSUER/);
+    const env = loadEnv({ DATABASE_URL, AUTH_MODE: 'keycloak', KEYCLOAK_ISSUER: issuer, KEYCLOAK_JWKS_URL: jwks });
+    expect(env).toMatchObject({ AUTH_MODE: 'keycloak', KEYCLOAK_ISSUER: issuer, KEYCLOAK_JWKS_URL: jwks });
+  });
+
+  test('AUTH_MODE=none does not need the Keycloak variables', () => {
+    expect(loadEnv({ DATABASE_URL, AUTH_MODE: 'none' }).KEYCLOAK_ISSUER).toBeUndefined();
+  });
 });

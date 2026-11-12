@@ -77,6 +77,10 @@ services:
     environment:
       <<: *app-env
       PORT: "3000"
+      # Optional auth (spec §9): `AUTH_MODE=keycloak docker compose --profile auth up -d`.
+      AUTH_MODE: ${AUTH_MODE:-none}
+      KEYCLOAK_ISSUER: http://localhost:8080/realms/wagering
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
     ports:
       - "3000:3000"
     healthcheck: *app-healthcheck
@@ -96,3 +100,33 @@ services:
       <<: *app-env
       PORT: "3002"
     healthcheck: *app-healthcheck
+
+  # Optional IdP (spec §9), only with `--profile auth`. Dev mode, in-memory, realm imported on start.
+  # Every credential here and in the realm export is TEST ONLY.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5
+    profiles: [auth]
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Hostname v2 with a full URL: `iss` is http://localhost:8080/realms/wagering whether the token is
+      # requested from the host (localhost:8080) or from inside the network (keycloak:8080).
+      KC_HOSTNAME: http://localhost:8080
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    volumes:
+      - ./infra/keycloak/realm-wagering.json:/opt/keycloak/data/import/realm-wagering.json:ro
+    ports:
+      - "8080:8080"
+    healthcheck:
+      # The image has no curl: a raw HTTP request to the management port.
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"status": "UP"' <&3
+      interval: 3s
+      timeout: 5s
+      retries: 60
+      start_period: 10s

@@ -45,3 +45,19 @@ export class UniqueViolationError extends Error {
     this.name = 'UniqueViolationError';
   }
 }
+
+/** The caller presented no usable credentials: no, malformed, invalid, expired or wrong-audience token (→ 401). */
+export class UnauthenticatedError extends Error {
+  constructor(message = 'Authentication required') {
+    super(message);
+    this.name = 'UnauthenticatedError';
+  }
+}
+
+/** The authenticated caller tried to act as another provider (→ 403 PROVIDER_MISMATCH). */
+export class ForbiddenProviderError extends Error {
+  constructor(readonly providerId: string) {
+    super(`Caller may not act as provider ${providerId}`);
+    this.name = 'ForbiddenProviderError';
+  }
+}
