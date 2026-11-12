@@ -53,11 +53,11 @@ Durante as rodadas, nenhuma outra stack Docker estava ativa (a infra de teste `w
 
 **Classificação das respostas e thresholds.**
 
-- `http.setResponseCallback(expectedStatuses(200, 202, 422))`: um 422 `INSUFFICIENT_FUNDS` é resposta de negócio, não erro. Erro é 5xx, timeout (sem status) ou 4xx inesperado. No brief, o threshold estava escrito como `http_req_failed{expected_response:true}`, mas essa submétrica tem 0% de falhas por definição. Em vez dela, o callback acima define o que é falha, e o threshold é `http_req_failed < 1%`.
+- `http.setResponseCallback(expectedStatuses(200, 202, 422))`: um 422 `INSUFFICIENT_FUNDS` é resposta de negócio, não erro. Erro é 5xx, timeout (sem status) ou 4xx inesperado. No plano (`docs/superpowers/plans/2026-11-11-wagering-processor.md`, Task 22), o threshold estava escrito como `http_req_failed{expected_response:true}`, mas essa submétrica tem 0% de falhas por definição. Em vez dela, o callback acima define o que é falha, e o threshold é `http_req_failed < 1%`.
 - `checks{type:correctness} == 1.0` em todo cenário. Para toda resposta decidida (não 5xx), verifica: status permitido para o kind (`BET` só pode ser recusada por `INSUFFICIENT_FUNDS`; `WIN`/`LOSS` precisam dar 200), `body.status` coerente com o status HTTP, saldo no formato `^\d+\.\d{2}$` em BRL e `idempotentReplay` com o valor esperado. Nas duplicatas, verifica também: mesmo `transactionId`, mesmo status, header `Idempotent-Replayed: true` e, no par simultâneo, exatamente um original.
 - No `distributed`, passar da saturação é o objetivo do cenário, então a taxa de erro (que inclui timeouts) é só reportada por degrau. Reprovam a rodada a correção e qualquer 5xx ou 4xx inesperado (`responses_5xx` e `responses_unexpected_4xx` com `count==0`). Esses dois gates foram acrescentados depois da rodada oficial, na qual os dois contadores foram 0.
 
-**Capacidade.** O `distributed` é uma escada: 100, 200, 300, 400, 500, 600 e 700 req/s, cada degrau alcançado em 5 s e mantido por 30 s, sobre 1.000 wallets com 1.000.000,00. As requisições recebem a tag do degrau em que começaram, e cada degrau tem suas próprias métricas. A rodada exploratória foi até 800 req/s e mostrou que a saturação vinha antes, em torno de 550 req/s. Por isso a escada foi encurtada para caber em ~5 min. O brief sugeria uma rampa contínua de 50 até 800 req/s em 5 min. A escada responde à mesma pergunta e dá, além disso, percentis estáveis por patamar. O relatório usa duas definições:
+**Capacidade.** O `distributed` é uma escada: 100, 200, 300, 400, 500, 600 e 700 req/s, cada degrau alcançado em 5 s e mantido por 30 s, sobre 1.000 wallets com 1.000.000,00. As requisições recebem a tag do degrau em que começaram, e cada degrau tem suas próprias métricas. A rodada exploratória foi até 800 req/s e mostrou que a saturação vinha antes, em torno de 550 req/s. Por isso a escada foi encurtada para caber em ~5 min. O plano (`docs/superpowers/plans/2026-11-11-wagering-processor.md`, Task 22) sugeria uma rampa contínua de 50 até 800 req/s em 5 min. A escada responde à mesma pergunta e dá, além disso, percentis estáveis por patamar. O relatório usa duas definições:
 - **capacidade com latência**: maior degrau com ≥ 97% da taxa-alvo, erro < 1% e p95 ≤ 100 ms (SLO arbitrário, mas explícito);
 - **throughput máximo**: a maior taxa efetivamente atingida em algum degrau.
 
@@ -73,7 +73,7 @@ Esse critério foi **endurecido depois da rodada oficial**. O primeiro critério
 | `sqs-drain` | 50.000 mensagens (envelope README §10, grupo = `walletId`) enfileiradas com `SendMessageBatch` (k6 + `k6-jslib-aws`) com os consumers parados; depois sobem N consumers, e o tempo é medido até `ApproximateNumberOfMessages + NotVisible = 0`, com amostragem de 1 s. Rodadas com N = 1 e N = 3, recriando os consumers entre elas | 1.000 (1.000.000,00) | ~10 min no total |
 | `soak` | 295 req/s, cerca de 50% do throughput máximo medido | 1.000 (1.000.000,00) | **10 min** (o plano previa 15; o tempo foi reduzido para manter a execução prática) |
 
-`hot1high` não estava no brief. Foi acrescentado para medir o teto de uma única wallet numa taxa (400 req/s) que o sistema sustenta com folga quando a carga está distribuída.
+`hot1high` não estava no plano (`docs/superpowers/plans/2026-11-11-wagering-processor.md`, Task 22). Foi acrescentado para medir o teto de uma única wallet numa taxa (400 req/s) que o sistema sustenta com folga quando a carga está distribuída.
 
 ## Resultados
 
@@ -217,6 +217,7 @@ Em ordem de retorno esperado:
 - **Amostragem grossa.** São 1 s para `pg_stat_activity` e ~3 s para `docker stats`, e os quantis do lado do serviço vêm dos buckets padrão do prom-client. As porcentagens de espera são proporções de amostras, não tempo exato.
 - **Variação.** São duas rodadas por cenário. As caudas variaram até 10×, e houve uma parada de ~2 s não explicada no cenário de duplicatas (ver acima).
 - **O mix não inclui `REFUND`/`ROLLBACK` nem `PENDING_REFERENCE`.** O worker de pendências ficou ocioso, e esses caminhos estão cobertos pelas suítes de concorrência e E2E, não por carga.
+- **Timeouts acrescentados depois da rodada.** O pool do `pg` passou a ter `connectionTimeoutMillis = 5000`, que também limita a espera por uma conexão livre, e o cliente SQS passou a ter timeout de 5 s por requisição. Na rodada oficial, a maior latência medida foi ~2,4 s, abaixo desses limites. Numa saturação mais profunda, uma espera de pool acima de 5 s agora vira 503 retentável em vez de fila, o que reprovaria o gate de 5xx do `distributed`.
 - **Ambiente de desenvolvimento.** Postgres com configuração padrão (`shared_buffers` de 128 MB, por exemplo) e logs `info` no stdout do Docker, sem nenhum tuning.
 
 ## Como reproduzir

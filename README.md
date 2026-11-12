@@ -63,7 +63,7 @@ PLAYER_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
 WALLET_ID=$(curl -s -X POST $API/wallets -H 'content-type: application/json' \
   -d "{\"playerId\":\"$PLAYER_ID\",\"initialBalance\":{\"amount\":\"100.00\",\"currency\":\"BRL\"}}" | jq -r .id)
 
-# Mesma (playerId, currency) de novo → 409 WALLET_ALREADY_EXISTS
+# Mesma (playerId, currency) de novo → 409 WALLET_ALREADY_EXISTS (o problem não traz o walletId; ver interpretação 21 do ARCHITECTURE.md)
 curl -s -X POST $API/wallets -H 'content-type: application/json' \
   -d "{\"playerId\":\"$PLAYER_ID\",\"initialBalance\":{\"amount\":\"0.00\",\"currency\":\"BRL\"}}"
 
@@ -82,7 +82,7 @@ curl -s -X POST $API/wallets/$WALLET_ID/reconciliation
 
 ### Transações de aposta
 
-`POST /wagering/transactions` exige o header `Idempotency-Key` (1–255 caracteres). A resposta é sempre `{transactionId, status, balance, failureCode?, idempotentReplay}`, e o status HTTP segue o status da transação: `PROCESSED` → 200, `PENDING_REFERENCE` → 202, `REJECTED` → 422.
+`POST /wagering/transactions` exige o header `Idempotency-Key` (1–255 caracteres). A chave é global, não por provedor: provedores devem usar UUIDs. A resposta é sempre `{transactionId, status, balance, failureCode?, idempotentReplay}`, e o status HTTP segue o status da transação: `PROCESSED` → 200, `PENDING_REFERENCE` → 202, `REJECTED` → 422.
 
 ```bash
 # BET de 25.00 → 200 PROCESSED, balance 75.00
@@ -95,7 +95,7 @@ curl -s -i -X POST $API/wagering/transactions \
 EOF
 ```
 
-Reenviar exatamente o mesmo comando devolve o mesmo status e o mesmo corpo, com `"idempotentReplay": true` e o header `Idempotent-Replayed: true`, e não debita de novo. Com a mesma chave e qualquer campo de negócio diferente (por exemplo `"amount":"30.00"`), a resposta é 409 `IDEMPOTENCY_KEY_REUSED`. O mesmo `(providerId, externalTransactionId)` com outra chave dá 409 `EXTERNAL_ID_CONFLICT`.
+Reenviar exatamente o mesmo comando devolve o mesmo status e o mesmo corpo de uma transação já decidida (um `PENDING_REFERENCE` já resolvido devolve a decisão), com `"idempotentReplay": true` e o header `Idempotent-Replayed: true`, e não debita de novo. Com a mesma chave e qualquer campo de negócio diferente (por exemplo `"amount":"30.00"`), a resposta é 409 `IDEMPOTENCY_KEY_REUSED`. O mesmo `(providerId, externalTransactionId)` com outra chave dá 409 `EXTERNAL_ID_CONFLICT`.
 
 ```bash
 # WIN de 50.00 referenciando a BET → 200, balance 125.00
@@ -257,11 +257,11 @@ Do host, a mesma fila fica em `http://localhost:4567/000000000000/wager-transact
 | Script | O que sobe | O que roda | Duração aproximada* |
 |---|---|---|---|
 | `bun run typecheck` | nada | `tsc --noEmit` (`strict`). O Bun não faz type-check | ~2 s |
-| `bun run test:unit` | nada | `test/unit`: domínio, hashing, backoff, classificação do consumer, mapeamento de erros, env, guard JWT (com JWKS local), sem IO | <1 s (257 testes) |
-| `bun run test:integration` | `compose.test.yml` (projeto `wagering-test`: Postgres em `55432`, LocalStack em `4566`) | `test/integration`, com Postgres e LocalStack reais. Cada arquivo clona um banco migrado (`CREATE DATABASE … TEMPLATE`) e cria filas próprias | ~25 s (180 testes; 10 skips: o smoke do Compose só roda no E2E e o teste de Keycloak só com `AUTH_E2E=1`) |
-| `bun run test:concurrency` | `compose.test.yml` | `test/concurrency`: os 8 cenários obrigatórios com processos reais (`Bun.spawn` de `api`/`consumer`/`workers`) | ~20 s (9 testes) |
-| `bun run test:e2e` | `compose.yml` inteiro com `--build --scale consumer=3 --scale workers=2 --wait`; ao final, `docker compose down -v` | `test/e2e` + `test/integration/runtime` (`E2E_COMPOSE=1`), interagindo só por HTTP e SQS | ~45 s com imagens em cache (17 testes) |
-| `bun run test:auth` | `keycloak` (`docker compose --profile auth up -d --wait keycloak`) e `compose.test.yml`; ao final, remove só o container do Keycloak | `test/integration/http/auth.test.ts` com `AUTH_E2E=1`: API em processo com `AUTH_MODE=keycloak` contra o Keycloak real (sem token → 401, token sem audiência ou lixo → 401, provedor errado → 403, provedor certo → 200, health/metrics sem token) | ~20 s (6 testes) |
+| `bun run test:unit` | nada | `test/unit`: domínio, hashing, backoff, classificação do consumer, mapeamento de erros, env, guard JWT (com JWKS local), sem IO | <1 s |
+| `bun run test:integration` | `compose.test.yml` (projeto `wagering-test`: Postgres em `55432`, LocalStack em `4566`) | `test/integration`, com Postgres e LocalStack reais. Cada arquivo clona um banco migrado (`CREATE DATABASE … TEMPLATE`) e cria filas próprias | ~30 s (com skips: o smoke do Compose só roda no E2E e o teste de Keycloak só com `AUTH_E2E=1`) |
+| `bun run test:concurrency` | `compose.test.yml` | `test/concurrency`: os 8 cenários obrigatórios com processos reais (`Bun.spawn` de `api`/`consumer`/`workers`) | ~20 s |
+| `bun run test:e2e` | `compose.yml` inteiro com `--build --scale consumer=3 --scale workers=2 --wait`; ao final, `docker compose down -v` | `test/e2e` + `test/integration/runtime` (`E2E_COMPOSE=1`), interagindo só por HTTP e SQS | ~45 s com imagens em cache |
+| `bun run test:auth` | `keycloak` (`docker compose --profile auth up -d --wait keycloak`) e `compose.test.yml`; ao final, remove só o container do Keycloak | `test/integration/http/auth.test.ts` com `AUTH_E2E=1`: API em processo com `AUTH_MODE=keycloak` contra o Keycloak real (sem token → 401, token sem audiência ou lixo → 401, provedor errado → 403, provedor certo → 200, health/metrics sem token) | ~20 s |
 | `bun run test:load` | Para cada cenário, uma stack nova de `compose.yml` + `compose.load.yml` (limites fixos de CPU/memória) e, ao final, `docker compose down -v` | k6 (`grafana/k6:2.3.0`, em container na rede do Compose) com os cenários `distributed`, `hot-wallet`, `duplicates` e `sqs-drain` (`--scenario soak` roda o soak de 10 min). Coleta `/metrics`, `pg_stat_activity` e `docker stats`; reconcilia todas as wallets e falha se alguma estiver inconsistente. Resultados em `test/load/results/<timestamp>/` (fora do git); análise em [`docs/load-test-report.md`](docs/load-test-report.md) | ~22 min (soak: ~12 min) |
 | `bun run test` | tudo acima, exceto `test:auth` e `test:load` (roda com `AUTH_MODE=none`) | `typecheck → test:unit → test:integration → test:concurrency → test:e2e` | ~1,5 min |
 | `bun run infra:test:up` / `infra:test:down` | sobe / derruba (`-v`) só o `compose.test.yml` | — | — |
