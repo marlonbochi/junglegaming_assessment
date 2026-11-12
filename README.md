@@ -281,6 +281,19 @@ Testes de carga (`bun run test:load [--scenario <nome>] [--consumers N] [--rate 
 
 Toda suíte não unitária termina verificando `wallet.balance == saldo reconstruído pelo ledger` em todas as wallets tocadas.
 
+### CI (GitHub Actions)
+
+O [`.github/workflows/ci.yml`](.github/workflows/ci.yml) roda em todo pull request, em push na `main` e sob demanda (`workflow_dispatch`). São quatro jobs em runners `ubuntu-latest`, com Bun 1.4.4:
+
+| Job | Roda | Depende de |
+|---|---|---|
+| `static` | `typecheck` + `test:unit` | — |
+| `integration` | `infra:test:up` → `test:integration` → `test:concurrency`. Em caso de falha, imprime os logs da infra | `static` |
+| `e2e` | `test:e2e` (stack completa do `compose.yml`, com build da imagem) | `static` |
+| `auth` | `test:auth` (Keycloak real) | `static` |
+
+`integration`, `e2e` e `auth` rodam em paralelo, cada um no seu runner, então as portas não colidem. Os testes de carga ficam fora do CI: levam ~22 min e medem a máquina, e runners compartilhados dariam números sem significado.
+
 ## Rodar fora do Docker
 
 Com a infra de teste no ar (`bun run infra:test:up`), os padrões das variáveis já apontam para o LocalStack em `localhost:4566`, e só `DATABASE_URL` é obrigatória:

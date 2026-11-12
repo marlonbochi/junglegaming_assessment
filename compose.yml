@@ -48,7 +48,7 @@ services:
       retries: 30
 
   localstack:
-    image: localstack/localstack:4
+    image: localstack/localstack:4.14.0
     environment:
       SERVICES: sqs
     ports:

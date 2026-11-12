@@ -18,7 +18,7 @@ Executado em 2026-11-11 com `bun run test:load` (cenários padrão) e `bun run t
 |---|---|
 | Máquina | MacBook Pro, Apple M1 Pro (8 núcleos: 6 de performance e 2 de eficiência), 16 GiB, macOS 27.2 |
 | Docker | Docker Desktop 29.9.3. VM Linux com **4 CPUs e 5,8 GiB** (o padrão do Docker Desktop, que não foi alterado) |
-| Versões | Bun 1.4.4 (imagem `oven/bun:1.4.4`), PostgreSQL 17.11 (`postgres:17-alpine`, `max_connections=300`, demais parâmetros no padrão), LocalStack 4.14.0 (`localstack/localstack:4`, só SQS), k6 v2.3.0 (`grafana/k6:2.3.0`), `k6-jslib-aws` 0.14.0 |
+| Versões | Bun 1.4.4 (imagem `oven/bun:1.4.4`), PostgreSQL 17.11 (`postgres:17-alpine`, `max_connections=300`, demais parâmetros no padrão), LocalStack 4.14.0 (`localstack/localstack:4.14.0`, só SQS), k6 v2.3.0 (`grafana/k6:2.3.0`), `k6-jslib-aws` 0.14.0 |
 | Aplicação | NestJS 12 + MikroORM 7, pool de **20 conexões por processo** (`DB_POOL_MAX`), `LOG_LEVEL=info` (logs JSON no stdout, como em produção), jitter ligado |
 
 Limites de `compose.load.yml` (cgroups, por réplica):
