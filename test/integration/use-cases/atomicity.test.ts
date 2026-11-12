@@ -3,6 +3,7 @@ import type { MikroORM } from '@mikro-orm/postgresql';
 import { PermanentInfraError, TransientInfraError } from '../../../src/application/errors';
 import { payloadHash } from '../../../src/application/hashing/payload-hash';
 import type { FaultInjector, FaultPoint } from '../../../src/application/ports/fault-injector';
+import type { AppLogger } from '../../../src/application/ports/logger';
 import { noopMetrics } from '../../../src/application/ports/metrics';
 import type { UnitOfWork } from '../../../src/application/ports/unit-of-work';
 import { OpenWallet } from '../../../src/application/use-cases/open-wallet';
@@ -45,9 +46,23 @@ afterAll(async () => {
 const brl = (amount: string) => ({ amount, currency: 'BRL' });
 const sqs = (messageId: string = newId()) => ({ type: 'sqs', consumerName: 'wager-consumer', messageId }) as const;
 
-function useCase(faults: FaultInjector = noFaults, unitOfWork: UnitOfWork = uow) {
-  return new SubmitWagerTransaction(unitOfWork, clock, ids, faults, metrics, () => 0);
+function useCase(faults: FaultInjector = noFaults, unitOfWork: UnitOfWork = uow, logger?: AppLogger) {
+  return new SubmitWagerTransaction(unitOfWork, clock, ids, faults, metrics, () => 0, logger);
 }
+
+/** Collects every log call as [level, fields, message]. */
+function recordingLogger(): AppLogger & { lines: Array<[string, object, string]> } {
+  const lines: Array<[string, object, string]> = [];
+  return {
+    lines,
+    info: (obj, msg) => void lines.push(['info', obj, msg]),
+    warn: (obj, msg) => void lines.push(['warn', obj, msg]),
+    error: (obj, msg) => void lines.push(['error', obj, msg]),
+  };
+}
+
+/** What `pg` raises when the database host name does not resolve (e.g. a stopped compose service). */
+const hostNotFound = () => Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), { code: 'ENOTFOUND' });
 
 function openWallet(amount = '100.00'): Promise<WalletRef> {
   return new OpenWallet(uow, clock, ids, noopMetrics).execute({
@@ -150,7 +165,7 @@ describe('SubmitWagerTransaction atomicity', () => {
     });
   });
 
-  test('FAILED is not recorded when the transaction already exists under that key', async () => {
+  test('FAILED is not recorded when the transaction already exists under that key: the outcome is unknown, so the error is transient and the retry is a replay', async () => {
     const wallet = await openWallet('100.00');
     const cmd = wagerCommand(wallet);
     let runs = 0;
@@ -162,27 +177,64 @@ describe('SubmitWagerTransaction atomicity', () => {
         return result;
       },
     };
+    const logger = recordingLogger();
 
-    await expect(useCase(noFaults, losesResponse).execute(cmd, sqs(), 'c')).rejects.toBeInstanceOf(PermanentInfraError);
+    const failure = useCase(noFaults, losesResponse, logger).execute(cmd, sqs(), 'c');
+    await expect(failure).rejects.toBeInstanceOf(TransientInfraError);
+    await expect(failure).rejects.toMatchObject({ cause: { message: 'lost after commit' } });
     expect((await txByKey(cmd.idempotencyKey)).map((r: { status: string }) => r.status)).toEqual(['PROCESSED']);
     expect(runs).toBe(2);
+    expect(metrics.named('transaction')).toEqual([]);
+    expect(logger.lines).toEqual([['warn', { cause: { type: 'Error' } }, 'commit outcome unknown; the retry resolves it as a replay']]);
+
+    // The retry the transient error asks for is answered as a replay of the committed transaction.
+    expect(await useCase().execute(cmd, sqs(), 'c')).toMatchObject({ status: Status.Processed, idempotentReplay: true });
   });
 
-  test('if recording FAILED fails too, PermanentInfraError is still thrown and nothing is written', async () => {
+  test('if recording FAILED fails too, the error is transient, nothing is written and the write failure is logged by name and code', async () => {
     const wallet = await openWallet('100.00');
     const cmd = wagerCommand(wallet);
     const message = sqs();
     const before = await snapshot(wallet.id, message.messageId);
     let runs = 0;
     const downAfterFirstRun: UnitOfWork = {
-      run: (fn) => (runs++ === 0 ? uow.run(fn) : Promise.reject(new Error('database gone'))),
+      run: (fn) => (runs++ === 0 ? uow.run(fn) : Promise.reject(hostNotFound())),
     };
+    const logger = recordingLogger();
 
-    const failure = useCase(crashingAt('before_commit'), downAfterFirstRun).execute(cmd, message, 'c');
-    await expect(failure).rejects.toBeInstanceOf(PermanentInfraError);
+    const failure = useCase(crashingAt('before_commit'), downAfterFirstRun, logger).execute(cmd, message, 'c');
+    await expect(failure).rejects.toBeInstanceOf(TransientInfraError);
     await expect(failure).rejects.toMatchObject({ cause: { message: 'boom at before_commit' } });
     expect(await snapshot(wallet.id, message.messageId)).toEqual(before);
     expect(runs).toBe(2);
     expect(metrics.named('transaction')).toEqual([]);
+    expect(logger.lines).toEqual([
+      ['error', { error: { type: 'Error', code: 'ENOTFOUND' }, cause: { type: 'Error' } }, 'could not record the FAILED transaction'],
+    ]);
+    // Names and codes only: messages may carry row values.
+    expect(JSON.stringify(logger.lines)).not.toContain('boom');
+    expect(JSON.stringify(logger.lines)).not.toContain('getaddrinfo');
+  });
+});
+
+describe('SubmitWagerTransaction on an unreachable database', () => {
+  let unreachable: MikroORM;
+
+  beforeAll(async () => {
+    // `.invalid` never resolves (RFC 2606): pg fails with ENOTFOUND, like a stopped compose service.
+    unreachable = await testOrm('postgres://postgres:postgres@postgres.invalid:5432/wagering');
+  });
+
+  afterAll(() => unreachable.close(true));
+
+  test('a host that does not resolve is a transient failure, not a permanent one', async () => {
+    const logger = recordingLogger();
+    const cmd = wagerCommand({ id: newId(), playerId: newId() });
+
+    const failure = useCase(noFaults, new MikroOrmUnitOfWork(unreachable, noopMetrics), logger).execute(cmd, sqs(), 'c');
+    await expect(failure).rejects.toBeInstanceOf(TransientInfraError);
+    await expect(failure).rejects.toMatchObject({ cause: { code: 'ENOTFOUND' } });
+    expect(metrics.named('transaction')).toEqual([]);
+    expect(logger.lines).toEqual([]);
   });
 });

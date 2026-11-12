@@ -286,6 +286,22 @@ describe('retries', () => {
     expect(await balance(wallet.id)).toBe('75.00');
   }, SLOW);
 
+  test('database host that does not resolve (ENOTFOUND): the message is retried, never dead-lettered', async () => {
+    const q = await queues();
+    // `.invalid` never resolves (RFC 2606), like the `postgres` name of a stopped compose service.
+    const { metrics } = await startConsumer(q, { env: { DATABASE_URL: 'postgres://postgres:postgres@postgres.invalid:5432/wagering' } });
+    await sendWagerMessage(sqs, q.queueUrl, wagerData({ id: newId(), playerId: newId() }));
+
+    // Received, retried with backoff, received again and retried again.
+    await eventually(async () => expect(await metricsText(metrics)).toContain('wagering_retries_total{component="consumer"} 2'), {
+      timeoutMs: 20_000,
+    });
+    expect(await metricsText(metrics)).not.toContain('sqs_dlq_messages_total{');
+    expect(await receiveAll(sqs, q.dlqUrl, { waitMs: 500 })).toEqual([]);
+    const { visible, inFlight } = await queueCounts(sqs, q.queueUrl);
+    expect(visible + inFlight).toBe(1);
+  }, SLOW);
+
   test('repeated transient failures reach DLQ through redrive after maxReceiveCount', async () => {
     const q = await queues({ maxReceiveCount: 2 });
     const { metrics } = await startConsumer(q, { faults: transientFaults('before_commit', Infinity) });

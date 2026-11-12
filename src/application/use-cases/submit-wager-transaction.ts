@@ -8,11 +8,13 @@ import { WagerTransaction } from '../../domain/wagering/wager-transaction';
 import { WagerTransactionStatus } from '../../domain/wagering/wager-transaction.types';
 import type { Wallet } from '../../domain/wallet/wallet';
 import type { SubmissionSource, WagerCommand } from '../commands/wager-command';
+import { summarizeError } from '../error-summary';
 import { ApplicationError, PermanentInfraError, TransientInfraError, UniqueViolationError } from '../errors';
 import { payloadHash } from '../hashing/payload-hash';
 import { lookupReference, persistSettlement } from '../persist-settlement';
 import type { Clock, IdGenerator } from '../ports/clock';
 import type { FaultInjector } from '../ports/fault-injector';
+import { noopLogger, type AppLogger } from '../ports/logger';
 import type { Metrics } from '../ports/metrics';
 import type { TxRepositories, UnitOfWork } from '../ports/unit-of-work';
 
@@ -53,6 +55,7 @@ export class SubmitWagerTransaction {
     private readonly faults: FaultInjector,
     private readonly metrics: Metrics,
     private readonly jitter: () => number,
+    private readonly logger: AppLogger = noopLogger,
   ) {}
 
   async execute(cmd: WagerCommand, source: SubmissionSource, correlationId: string): Promise<SubmitResult> {
@@ -174,22 +177,31 @@ export class SubmitWagerTransaction {
 
   /**
    * An unclassified error after validation is a bug: record the transaction as FAILED in its own SQL
-   * transaction (wallet locked first) so replays stop retrying it, then surface it as permanent.
+   * transaction (wallet locked first) so replays stop retrying it, then surface it as permanent. When
+   * that is not possible the error is transient: either the FAILED write failed too (the database is
+   * likely down), or the key already exists, so the first run may have committed and a retry answers
+   * it as a replay.
    */
-  private async recordFailure(s: Submission, cause: unknown): Promise<PermanentInfraError> {
+  private async recordFailure(s: Submission, cause: unknown): Promise<PermanentInfraError | TransientInfraError> {
+    let recorded: 'recorded' | 'no_wallet' | 'exists';
     try {
-      const recorded = await this.uow.run(async (r) => {
-        if (!(await r.wallets.lockById(s.cmd.walletId))) return false;
-        if (await r.transactions.findByIdempotencyKey(s.cmd.idempotencyKey)) return false;
+      recorded = await this.uow.run(async (r) => {
+        if (!(await r.wallets.lockById(s.cmd.walletId))) return 'no_wallet';
+        if (await r.transactions.findByIdempotencyKey(s.cmd.idempotencyKey)) return 'exists';
         const tx = s.newTransaction();
         tx.fail(FailureCode.InternalProcessingError, s.now);
         await r.transactions.insert(tx);
-        return true;
+        return 'recorded';
       });
-      if (recorded) this.metrics.transaction(WagerTransactionStatus.Failed, s.cmd.kind, s.source.type);
-    } catch {
-      // The original error is what matters; the message is retried or dead-lettered either way.
+    } catch (writeError) {
+      this.logger.error({ error: summarizeError(writeError), cause: summarizeError(cause) }, 'could not record the FAILED transaction');
+      return new TransientInfraError('Unexpected error and the failure could not be recorded', { cause });
     }
+    if (recorded === 'exists') {
+      this.logger.warn({ cause: summarizeError(cause) }, 'commit outcome unknown; the retry resolves it as a replay');
+      return new TransientInfraError('Unexpected error with an unknown commit outcome', { cause });
+    }
+    if (recorded === 'recorded') this.metrics.transaction(WagerTransactionStatus.Failed, s.cmd.kind, s.source.type);
     return new PermanentInfraError('Unexpected error while processing wager transaction', { cause });
   }
 

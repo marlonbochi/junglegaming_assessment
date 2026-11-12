@@ -378,6 +378,17 @@ describe('infrastructure failures', () => {
     expect(row.n).toBe(0);
   });
 
+  test('database host that does not resolve (ENOTFOUND) → 503 SERVICE_UNAVAILABLE retryable with Retry-After', async () => {
+    const unreachable = await startTestApi('postgres://postgres:postgres@postgres.invalid:5432/wagering');
+    try {
+      const res = await submit(wagerBody({ id: newId(), playerId: newId() }), undefined, {}, unreachable);
+      expectProblem(res, 503, 'SERVICE_UNAVAILABLE', true);
+      expect(res.headers.get('retry-after')).toBe('1');
+    } finally {
+      await unreachable.close();
+    }
+  });
+
   test('unexpected error → 500 INTERNAL_ERROR retryable; its replay → 500 terminal FAILED, not retryable', async () => {
     const wallet = await openWallet('100.00', faulty);
     const body = wagerBody(wallet);

@@ -162,6 +162,28 @@ describe('MikroOrmUnitOfWork', () => {
     expect(metrics.lockConflicts).toBe(0);
   });
 
+  test(
+    'a server that accepts the socket but never answers fails the connect after 5s, as a transient error',
+    async () => {
+      // Accepts TCP connections and stays silent: without a pg connect timeout the startup would hang forever.
+      const silent = Bun.listen({ hostname: '127.0.0.1', port: 0, socket: { data() {} } });
+      const stuck = await testOrm(`postgres://postgres:postgres@127.0.0.1:${silent.port}/wagering`);
+      try {
+        const started = performance.now();
+        const error = await new MikroOrmUnitOfWork(stuck, noopMetrics).run((r) => r.wallets.lockById(newId())).catch((e: unknown) => e);
+        const elapsedMs = performance.now() - started;
+
+        expect(error).toBeInstanceOf(TransientInfraError);
+        expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
+        expect(elapsedMs).toBeLessThan(10_000);
+      } finally {
+        await stuck.close(true);
+        silent.stop(true);
+      }
+    },
+    { timeout: 20_000 },
+  );
+
   test('unique violation becomes UniqueViolationError and rolls back', async () => {
     const { wallet } = await uow.run((r) => persistOpenedWallet(r, '0.00'));
     const sameOwner = Wallet.rehydrate({ ...wallet.toState(), id: newId() });

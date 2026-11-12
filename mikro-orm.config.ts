@@ -8,6 +8,8 @@ import { WagerTransactionSchema } from './src/infrastructure/persistence/schemas
 import { WalletSchema } from './src/infrastructure/persistence/schemas/wallet.schema';
 
 const MIGRATIONS_PATH = './src/infrastructure/persistence/migrations';
+/** `statement_timeout` only applies once connected; this bounds the connect itself (unreachable or silent host). */
+const CONNECT_TIMEOUT_MS = 5000;
 
 export function createOrmConfig(env: Pick<Env, 'DATABASE_URL' | 'DB_POOL_MAX'>): Options {
   return defineConfig({
@@ -17,6 +19,8 @@ export function createOrmConfig(env: Pick<Env, 'DATABASE_URL' | 'DB_POOL_MAX'>):
     entities: [WalletSchema, WagerTransactionSchema, LedgerEntrySchema, InboxSchema, OutboxSchema],
     allowGlobalContext: false,
     pool: { max: env.DB_POOL_MAX },
+    // Handed to the `pg` Pool as is; MikroORM's `pool` option only maps min/max/idleTimeoutMillis.
+    driverOptions: { connectionTimeoutMillis: CONNECT_TIMEOUT_MS },
     extensions: [Migrator],
     migrations: {
       path: MIGRATIONS_PATH,

@@ -1,6 +1,7 @@
 import { Inject, Module, type DynamicModule, type OnApplicationShutdown } from '@nestjs/common';
 import type { SQSClient } from '@aws-sdk/client-sqs';
 import type { MikroORM } from '@mikro-orm/postgresql';
+import type pino from 'pino';
 import { createOrm } from '../../mikro-orm.config';
 import type { Clock, IdGenerator } from '../application/ports/clock';
 import type { FaultInjector } from '../application/ports/fault-injector';
@@ -9,6 +10,7 @@ import type { UnitOfWork } from '../application/ports/unit-of-work';
 import { SubmitWagerTransaction } from '../application/use-cases/submit-wager-transaction';
 import type { Env } from '../infrastructure/config/env';
 import { HealthService } from '../infrastructure/observability/health';
+import { toAppLogger } from '../infrastructure/observability/logger';
 import { PromMetrics } from '../infrastructure/observability/metrics';
 import { MikroOrmUnitOfWork } from '../infrastructure/persistence/mikro-orm-unit-of-work';
 import { EnvFaultInjector } from '../infrastructure/runtime/env-fault-injector';
@@ -18,6 +20,7 @@ import { CLOCK, FAULTS, IDS, JITTER, METRICS, ORM, SQS, UNIT_OF_WORK } from './t
 
 export interface CoreModuleDeps {
   env: Env;
+  logger: pino.Logger;
   sqs: SQSClient;
   faults?: FaultInjector;
 }
@@ -57,7 +60,7 @@ export class CoreModule implements OnApplicationShutdown {
         provide: SubmitWagerTransaction,
         inject: [UNIT_OF_WORK, CLOCK, IDS, FAULTS, METRICS, JITTER],
         useFactory: (uow: UnitOfWork, clock: Clock, ids: IdGenerator, faults: FaultInjector, metrics: Metrics, jitter: () => number) =>
-          new SubmitWagerTransaction(uow, clock, ids, faults, metrics, jitter),
+          new SubmitWagerTransaction(uow, clock, ids, faults, metrics, jitter, toAppLogger(deps.logger)),
       },
     ];
     return { module: CoreModule, providers, exports: providers.map((p) => p.provide) };
