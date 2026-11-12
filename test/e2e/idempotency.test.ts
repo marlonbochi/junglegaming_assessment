@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test';
 import { call, submitWager } from '../support/http';
 import { newId } from '../support/persistence';
 import { wagerCommand } from '../support/use-cases';
-import { api, balanceOf, brl, e2eEnabled, openWallet, reconcileAll, sendWager } from './setup';
+import { api, balanceOf, brl, e2eEnabled, expectNotDeadLettered, openWallet, reconcileAll, sendWager } from './setup';
 import { eventually } from '../support/eventually';
 
 const wallets: string[] = [];
@@ -84,7 +84,7 @@ describe.skipIf(!e2eEnabled)('e2e: idempotency', () => {
     await sendWager(cmd, { messageId, deduplicationId: `${messageId}-a` });
     await sendWager(cmd, { messageId, deduplicationId: `${messageId}-b` });
     // A fresh message carrying the same business key (another producer retry).
-    await sendWager(cmd);
+    const retry = await sendWager(cmd);
     await eventually(async () => expect(await balanceOf(wallet.id)).toBe('90.00'), { timeoutMs: 30_000 });
 
     const replay = await submitWager(api, cmd);
@@ -96,5 +96,6 @@ describe.skipIf(!e2eEnabled)('e2e: idempotency', () => {
     expect(await balanceOf(wallet.id)).toBe('90.00');
     const entries = await call(api, 'GET', `/wallets/${wallet.id}/ledger?limit=50`);
     expect(entries.body.items).toHaveLength(2);
+    await expectNotDeadLettered([messageId, retry.messageId]);
   });
 });

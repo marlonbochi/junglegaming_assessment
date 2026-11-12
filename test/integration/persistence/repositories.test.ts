@@ -9,6 +9,7 @@ import { WagerTransactionStatus } from '../../../src/domain/wagering/wager-trans
 import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/mikro-orm-unit-of-work';
 import { createTestDatabase, type TestDatabase } from '../../support/db';
 import { brl, now } from '../../support/fixtures';
+import { assertLedgerConsistency } from '../../support/ledger-consistency';
 import {
   newId,
   outboxMessage,
@@ -31,6 +32,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Constitution #26: every wallet these tests touched still matches its ledger.
+  await assertLedgerConsistency(db.sql);
   await orm.close(true);
   await db.drop();
 });

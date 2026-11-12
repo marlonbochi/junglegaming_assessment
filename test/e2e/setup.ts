@@ -3,7 +3,7 @@ import { expect } from 'bun:test';
 import type { WagerCommand } from '../../src/application/commands/wager-command';
 import { eventually } from '../support/eventually';
 import { call, openWalletVia, type HttpTarget } from '../support/http';
-import { sendWagerMessage, type SendWagerOptions } from '../support/sqs';
+import { queueCounts, sendWagerMessage, type SendWagerOptions } from '../support/sqs';
 
 /** E2E files only run against a live compose stack (`bun run test:e2e` sets this). */
 export const e2eEnabled = process.env.E2E_COMPOSE === '1';
@@ -73,6 +73,12 @@ export class QueueTap {
     }
   }
 
+  /** Messages whose parsed-or-raw body satisfies `match` among everything this tap has read so far, now included. */
+  async seen(match: (message: Message, body: any) => boolean): Promise<Message[]> {
+    await this.pull();
+    return this.messages.filter((m) => match(m, parse(m.Body)));
+  }
+
   /** Messages whose parsed-or-raw body satisfies `match`, once at least `min` of them have shown up. */
   async where(match: (message: Message, body: any) => boolean, opts: { min?: number; timeoutMs?: number } = {}): Promise<Message[]> {
     const { min = 1, timeoutMs = 45_000 } = opts;
@@ -98,6 +104,17 @@ function parse(body: string | undefined): any {
 
 export const eventsTap = new QueueTap(eventsUrl);
 export const dlqTap = new QueueTap(dlqUrl);
+
+/**
+ * Asserts that none of `messageIds` was dead-lettered. The consumer sends to the DLQ before deleting
+ * from the wager queue, so once that queue is drained a dead-lettered message is already in the DLQ.
+ */
+export async function expectNotDeadLettered(messageIds: string[]): Promise<void> {
+  await eventually(async () => expect(await queueCounts(sqs, wagerQueueUrl)).toEqual({ visible: 0, inFlight: 0 }), {
+    timeoutMs: 45_000,
+  });
+  expect(await dlqTap.seen((_m, b) => messageIds.includes(b?.messageId))).toEqual([]);
+}
 
 /** Asserts the README integration-event envelope (version 1) and returns it. */
 export function expectEnvelope(event: any, eventType: string, aggregateId: string) {

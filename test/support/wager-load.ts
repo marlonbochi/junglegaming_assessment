@@ -14,8 +14,14 @@ const { Win, Loss, Refund, Rollback } = WagerTransactionKind;
 /** What follows a BET in its round; `undefined` = nothing. */
 const FOLLOW_UPS = [Win, Loss, Refund, Rollback, undefined] as const;
 
+/** For indexes and coin flips only; money comes from `randomCents`. */
 const randomInt = (min: number, max: number) => min + Math.floor(Math.random() * (max - min + 1));
-const amountOf = (cents: number) => ({ amount: `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`, currency: 'BRL' });
+/** A random amount in minor units, as bigint from the start (constitution #1: never `number`, not even in tests). */
+function randomCents(min: bigint, max: bigint): bigint {
+  const [word] = crypto.getRandomValues(new BigUint64Array(1));
+  return min + word! % (max - min + 1n);
+}
+const amountOf = (cents: bigint) => ({ amount: centsToText(cents), currency: 'BRL' });
 
 /**
  * Valid wagering flows on each wallet: rounds of a BET followed by a WIN, LOSS, REFUND or ROLLBACK of
@@ -30,23 +36,23 @@ export function planWagers(wallets: WalletRef[], opsPerWallet: number, openingCe
     let count = 0;
     while (count < opsPerWallet) {
       const roundId = `round-${newId()}`;
-      const betCents = randomInt(100, 5_000);
+      const betCents = randomCents(100n, 5_000n);
       const bet = wagerCommand(wallet, { roundId, money: amountOf(betCents) });
       ops.push(bet);
-      balance -= BigInt(betCents);
+      balance -= betCents;
       count += 1;
       const kind = FOLLOW_UPS[randomInt(0, FOLLOW_UPS.length - 1)];
       if (kind === undefined || count >= opsPerWallet) continue;
-      const winCents = randomInt(100, 10_000);
+      const winCents = randomCents(100n, 10_000n);
       const money = kind === Win ? amountOf(winCents) : bet.money;
       ops.push(wagerCommand(wallet, { roundId, kind, money, referenceExternalTransactionId: bet.externalTransactionId }));
-      if (kind === Win) balance += BigInt(winCents);
-      if (kind === Refund || kind === Rollback) balance += BigInt(betCents);
+      if (kind === Win) balance += winCents;
+      if (kind === Refund || kind === Rollback) balance += betCents;
       count += 1;
       if (count < opsPerWallet && randomInt(0, 4) === 0) {
-        const standaloneCents = randomInt(100, 2_000);
+        const standaloneCents = randomCents(100n, 2_000n);
         ops.push(wagerCommand(wallet, { kind: Win, money: amountOf(standaloneCents) }));
-        balance += BigInt(standaloneCents);
+        balance += standaloneCents;
         count += 1;
       }
     }

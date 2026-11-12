@@ -9,6 +9,7 @@ import { MikroOrmUnitOfWork } from '../../../src/infrastructure/persistence/mikr
 import { createTestDatabase, type TestDatabase } from '../../support/db';
 import { eventually } from '../../support/eventually';
 import { brl, now } from '../../support/fixtures';
+import { assertLedgerConsistency } from '../../support/ledger-consistency';
 import {
   latch,
   newId,
@@ -29,6 +30,8 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  // Constitution #26: every wallet these tests touched still matches its ledger.
+  await assertLedgerConsistency(db.sql);
   await orm.close(true);
   await db.drop();
 });

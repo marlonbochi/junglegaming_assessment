@@ -3,7 +3,7 @@ import { WagerTransactionKind } from '../../src/domain/wagering/wager-transactio
 import { eventually } from '../support/eventually';
 import { call } from '../support/http';
 import { wagerCommand } from '../support/use-cases';
-import { api, balanceOf, brl, e2eEnabled, eventsTap, expectEnvelope, openWallet, reconcileAll, sendWager } from './setup';
+import { api, balanceOf, brl, e2eEnabled, eventsTap, expectEnvelope, expectNotDeadLettered, openWallet, reconcileAll, sendWager } from './setup';
 
 const wallets: string[] = [];
 afterAll(async () => {
@@ -55,7 +55,7 @@ describe.skipIf(!e2eEnabled)('e2e: SQS journey with integration events', () => {
     const wallet = await openWallet('5.00');
     wallets.push(wallet.id);
     const bet = wagerCommand(wallet, { money: brl('25.00') });
-    await sendWager(bet);
+    const { messageId } = await sendWager(bet);
     const tx = await eventually(
       async () => {
         const res = await call(api, 'GET', `/providers/provider-a/wagering/transactions/${bet.externalTransactionId}`);
@@ -67,5 +67,7 @@ describe.skipIf(!e2eEnabled)('e2e: SQS journey with integration events', () => {
     const [rejected] = await eventsTap.where((_m, b) => b?.eventType === 'WagerTransactionRejected' && b.data?.transactionId === tx.id);
     expectEnvelope(JSON.parse(rejected!.Body!), 'WagerTransactionRejected', wallet.id);
     expect(await balanceOf(wallet.id)).toBe('5.00');
+    // Acked: gone from the wager queue, and not by way of the DLQ.
+    await expectNotDeadLettered([messageId]);
   });
 });

@@ -162,6 +162,16 @@ describe('settle', () => {
     }
   });
 
+  test('ROLLBACK with different amount → REJECTED REFERENCE_AMOUNT_MISMATCH', () => {
+    const b = processed(bet({ money: brl('30.00') }));
+    expectRejected(run(dependent('ROLLBACK'), '10.00', found(b)), FailureCode.ReferenceAmountMismatch, '10.00');
+  });
+
+  test('ROLLBACK of already reversed BET → REJECTED REFERENCE_ALREADY_REVERSED', () => {
+    const b = processed(bet());
+    expectRejected(run(dependent('ROLLBACK'), '10.00', found(b, true)), FailureCode.ReferenceAlreadyReversed, '10.00');
+  });
+
   test('ROLLBACK of WIN without funds → REJECTED REVERSAL_INSUFFICIENT_FUNDS (≠ INSUFFICIENT_FUNDS)', () => {
     const w = processed(tx({ kind: 'WIN' }));
     expectRejected(run(dependent('ROLLBACK'), '10.00', found(w)), FailureCode.ReversalInsufficientFunds, '10.00');
@@ -179,6 +189,16 @@ describe('settle', () => {
     expect(r.tx.nextAttemptAt).toEqual(pendingRetryAt);
     expect(r.tx.attempts).toBe(0);
     expect(r.tx.updatedAt).toEqual(now);
+    expect(r.wallet.version).toBe(1);
+  });
+
+  test.each(['WIN', 'LOSS'] as const)('%s with a missing reference → PENDING_REFERENCE, no entry, balance unchanged', (kind) => {
+    const r = run(dependent(kind), '10.00', MISSING);
+    expect(r.result).toEqual({ outcome: 'PENDING_REFERENCE' });
+    expect(r.tx.status).toBe(WagerTransactionStatus.PendingReference);
+    expect(r.tx.nextAttemptAt).toEqual(pendingRetryAt);
+    expect(r.tx.observedBalance).toBeUndefined();
+    expect(r.wallet.balance.toJSON().amount).toBe('10.00');
     expect(r.wallet.version).toBe(1);
   });
 
